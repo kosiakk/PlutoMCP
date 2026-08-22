@@ -1,34 +1,29 @@
+"""
+PlutoMCP — a thin wrapper that makes Pluto.jl available to Claude over MCP.
+
+Pluto runs inside this process and is called directly, so:
+
+  - the `Notebook` object here IS the server's, and reading it is always current;
+  - edits appear instantly in an open browser tab;
+  - a human editing in the browser needs no notification — their patches land on
+    the same object, and `StateChangeEvent` reports them if you want to react.
+
+Everything of substance lives in Pluto. This package contributes a cell-naming
+convention, a short-block-then-async run policy, and the MCP surface.
+"""
 module PlutoMCP
 
-using HTTP
-using MsgPack
+using Pluto
+using Sockets
 using UUIDs
 using JSON3
 using ModelContextProtocol
 
-include("client.jl")
-include("server.jl")
+include("embedded.jl")
+include("tools.jl")
 
-export connect_pluto, new_notebook, notebook_source, list_notebooks, close_pluto, resync!,
-    notebook_edit, run_cells, run_all, restart_process,
-    read_notebook, get_code, search_cells,
-    find_definition, list_dependencies, find_dependents,
-    get_output, cell_status, save_png,
+export start_session, stop_session, notebook_source, cell_labels, resolve_cell,
+    cell_info, cells_info, run_cells!, run_with_deadline, busy_cells,
     build_server, run_server
-
-# Managed mode ("start Pluto myself" rather than "attach" to an existing
-# session) lives in ext/PlutoMCPPlutoExt.jl, only loaded when the `Pluto`
-# package itself is present — it's a heavy dependency that attach-only
-# users shouldn't have to install. `extra_tools()` is how that extension
-# adds its own MCPTools to the *same* server/tool list (one MCP, not two)
-# without this module needing to know the extension exists.
-#
-# Declared with no method (not `extra_tools() = []`): a package extension
-# can only *add* a method to a function, not overwrite one that already
-# exists — for a zero-argument function like this, any body here would
-# collide with the extension's. `build_server()` checks `hasmethod`
-# before calling, since without the extension loaded there's no method
-# at all.
-function extra_tools end
 
 end # module PlutoMCP
