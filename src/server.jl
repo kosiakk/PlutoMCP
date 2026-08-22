@@ -222,8 +222,8 @@ function build_server()
     mcp_server(
         name="pluto-bridge",
         version="0.1.0",
-        description="Live co-authoring bridge into a running Pluto.jl session: read, edit, run, and inspect notebook cells, including Pluto's reactive dependency graph.",
-        tools=ALL_TOOLS,
+        description="Live co-authoring bridge into a Pluto.jl session: read, edit, run, and inspect notebook cells, including Pluto's reactive dependency graph. Attach to an already-running session, or (when the Pluto package is installed) start a fresh managed one.",
+        tools=vcat(ALL_TOOLS, hasmethod(extra_tools, Tuple{}) ? extra_tools() : MCPTool[]),
     )
 end
 

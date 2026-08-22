@@ -28,14 +28,19 @@ claude mcp add pluto -- julia --project=/path/to/PlutoMCP /path/to/PlutoMCP/bin/
 
 (Or wire it into whatever config your MCP client uses for a stdio server — the command is just `julia --project=<this dir> -e 'using PlutoMCP; PlutoMCP.run_server()'`.)
 
-Your Pluto server needs to already be running (`Pluto.run()`), and you'll need its `secret` from the URL Pluto printed on startup.
+## Two modes, one server
+
+**Attach** — drive a Pluto session you already have running. This is the default; it needs nothing beyond PlutoMCP itself. You'll need the server's `secret`, from the URL Pluto printed on startup.
+
+**Managed** — have the assistant start its own Pluto server and notebook from scratch, with no existing session required. This needs the `Pluto` package itself installed alongside PlutoMCP (`Pkg.add("Pluto")` in the same environment) — it's a heavy dependency, so it's wired up as a [package extension](https://pkgdocs.julialang.org/v1/creating-packages/#Conditional-loading-of-code-in-packages-(Extensions)): its two extra tools (`pluto_start`, `pluto_create_notebook`) simply don't exist if `Pluto` isn't there. Same server, same tool list either way — not two separate MCPs.
 
 ## Tools
 
 | Tool | Purpose |
 |---|---|
-| `pluto_connect` | Open a notebook. Call this first. |
-| `pluto_list_notebooks` | See what's open on the server. |
+| `pluto_connect` | Attach to a notebook on an already-running Pluto server. |
+| `pluto_new_notebook` | Create an empty notebook on an already-running server and attach to it. |
+| `pluto_list_notebooks` | See what's open on a server. |
 | `pluto_read_notebook` | List cells + their current outputs, without running anything. |
 | `pluto_notebook_edit` | Replace / insert / delete a cell — same shape as editing a `.ipynb`. |
 | `pluto_run_cells` | Run (or re-run) cells. |
@@ -45,11 +50,15 @@ Your Pluto server needs to already be running (`Pluto.run()`), and you'll need i
 | `pluto_list_dependencies` | What a cell depends on, and where each dependency is defined. |
 | `pluto_find_dependents` | What depends on a given variable. |
 | `pluto_render_png` | Guaranteed-PNG plot output, whatever the cell's native format. |
+| `pluto_start` *(managed mode)* | Start a fresh, PlutoMCP-managed Pluto server. |
+| `pluto_create_notebook` *(managed mode)* | Author a whole notebook's cells in one shot and open it — faster than building one cell-by-cell for an initial structure (title, sections, functions, a chart). |
 
 ## Known limitations
 
 - **No auth beyond Pluto's own `secret`.** Anyone who can reach the tool can reach the notebook.
 - **`pluto_render_png` recomputes** the cell rather than rasterizing existing output — fine for a cheap plot, wasteful for an expensive one.
+- **Managed mode reuses the WebSocket bridge**, not a from-scratch direct-call path. A self-started session *could*, in principle, be driven by calling Pluto's internal functions directly in-process, with no protocol involved — that's future work, not done yet.
+- **`Pluto.run!`'s auto-picked port isn't queryable after the fact**, so managed mode picks a free port itself first, then hands it to Pluto explicitly. A small race is possible (something else could grab the port in between).
 - **No output persistence.** Unlike Jupyter, Pluto keeps no results in the `.jl` file itself — only in the running process's memory. If the notebook's Julia process restarts, results are gone regardless of whether PlutoMCP was involved.
 - **Sequential edits are paced**, not confirmed. Firing several edits faster than a human would type was found to race against Pluto's own server-side handling; a short delay between them sidesteps it, but a proper fix would wait for server acknowledgment instead.
 

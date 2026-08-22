@@ -138,6 +138,43 @@ end
 
 close_pluto(conn::Conn) = close(conn.ws)
 
+"""
+    notebook_source(cells; cell_types=fill("code", length(cells))) -> String
+
+Renders a valid Pluto `.jl` notebook file's *text* from a plain list of
+cell source strings — no live connection involved. Useful for authoring
+a notebook's initial structure in one shot (batch, via `save_upload`/
+`SessionActions.open`) rather than cell-by-cell over the WebSocket
+protocol, which is slower and (per `notebook_edit`'s docs) has to be
+paced to avoid racing Pluto's own server-side handling.
+
+`cell_types[i] == "markdown"` auto-wraps that cell in `md"..."` (same
+rule as `notebook_edit`). Cell UUIDs are generated fresh; display order
+matches `cells`' order.
+"""
+function notebook_source(cells::Vector{String}; cell_types::Vector{String}=fill("code", length(cells)))
+    length(cell_types) == length(cells) || error("notebook_source: cell_types must have the same length as cells")
+    ids = [string(uuid4()) for _ in cells]
+    io = IOBuffer()
+    println(io, "### A Pluto.jl notebook ###")
+    println(io, "# v0.20.0")
+    println(io)
+    println(io, "using Markdown")
+    println(io, "using InteractiveUtils")
+    println(io)
+    for (id, code, ctype) in zip(ids, cells, cell_types)
+        source = ctype == "markdown" ? _wrap_markdown(code) : code
+        println(io, "# ╔═╡ ", id)
+        println(io, source)
+        println(io)
+    end
+    println(io, "# ╔═╡ Cell order:")
+    for id in ids
+        println(io, "# ╠═", id)
+    end
+    return String(take!(io))
+end
+
 # ------------------------------------------------------------ cell CRUD ----
 
 _wrap_markdown(src::String) = startswith(strip(src), "md\"") ? src : "md\"\"\"\n$src\n\"\"\""
