@@ -11,7 +11,7 @@ is that this state persists across tool calls.
 const SESSIONS = Dict{String,Conn}()
 
 function _conn(session::AbstractString)
-    haskey(SESSIONS, session) || error("no session named \"$session\" — call pluto_connect first")
+    haskey(SESSIONS, session) || error("no session named \"$session\" — call connect first")
     return SESSIONS[session]
 end
 
@@ -35,12 +35,12 @@ end
 # ---------------------------------------------------------------- tools ----
 
 pluto_connect = MCPTool(
-    name="pluto_connect",
+    name="connect",
     description="Connect to a running Pluto session and open one of its notebooks. Call this first.",
     parameters=[
         ToolParameter(name="host", type="string", description="Pluto server host:port, e.g. localhost:1234", required=true),
         ToolParameter(name="secret", type="string", description="Pluto's access secret (from its URL's ?secret= query param)", required=true),
-        ToolParameter(name="notebook_id", type="string", description="Notebook UUID (see pluto_list_notebooks)", required=true),
+        ToolParameter(name="notebook_id", type="string", description="Notebook UUID (see list_notebooks)", required=true),
         ToolParameter(name="session", type="string", description="Name to refer to this connection by in later calls", required=false, default="default"),
     ],
     handler=(args -> @safely begin
@@ -52,7 +52,7 @@ pluto_connect = MCPTool(
 )
 
 pluto_list_notebooks = MCPTool(
-    name="pluto_list_notebooks",
+    name="list_notebooks",
     description="List notebooks currently open on a running Pluto server, as {notebook_id => path}.",
     parameters=[
         ToolParameter(name="host", type="string", description="Pluto server host:port", required=true),
@@ -63,7 +63,7 @@ pluto_list_notebooks = MCPTool(
 )
 
 pluto_new_notebook = MCPTool(
-    name="pluto_new_notebook",
+    name="new_notebook",
     description="Create a brand-new empty notebook on the Pluto server and connect to it. Use this to start a fresh notebook rather than editing an existing one.",
     parameters=[
         ToolParameter(name="host", type="string", description="Pluto server host:port", required=true),
@@ -80,23 +80,23 @@ pluto_new_notebook = MCPTool(
 )
 
 pluto_read_notebook = MCPTool(
-    name="pluto_read_notebook",
+    name="read_notebook",
     description="List all cells (id, code, current output mime, errored) in display order. Does not run anything.",
-    parameters=[ToolParameter(name="session", type="string", description="Which pluto_connect session to use", required=false, default="default")],
+    parameters=[ToolParameter(name="session", type="string", description="Which connect session to use", required=false, default="default")],
     handler=(args -> @safely _ok(read_notebook(_conn(args["session"])))),
     return_type=TextContent,
 )
 
 pluto_notebook_edit = MCPTool(
-    name="pluto_notebook_edit",
-    description="Replace, insert, or delete a single Pluto cell — same shape as the built-in NotebookEdit tool for .ipynb files. insert adds a cell after cell_id (or at the very start if cell_id is omitted). Does not run the cell; call pluto_run_cells after.",
+    name="notebook_edit",
+    description="Replace, insert, or delete a single Pluto cell — same shape as the built-in NotebookEdit tool for .ipynb files. insert adds a cell after cell_id (or at the very start if cell_id is omitted). Does not run the cell; call run_cells after.",
     parameters=[
         ToolParameter(name="new_source", type="string", description="New cell code (ignored for edit_mode=delete)", required=false, default=""),
         ToolParameter(name="cell_id", type="string", description="Target cell (required for replace/delete; anchor for insert)", required=false),
         ToolParameter(name="cell_type", type="string", description="\"code\" or \"markdown\" (markdown is emulated: source gets wrapped in md\"...\")", required=false, default="code"),
         ToolParameter(name="edit_mode", type="string", description="\"replace\", \"insert\", or \"delete\"", required=false, default="replace"),
-        ToolParameter(name="code_folded", type="boolean", description="Collapse this cell's code in the UI so only its rendered output shows (purely cosmetic — the source is still always readable via pluto_read_notebook/pluto_get_output, folding doesn't hide it from tools). Omit to leave unchanged on replace, or default to unfolded on insert.", required=false),
-        ToolParameter(name="session", type="string", description="Which pluto_connect session to use", required=false, default="default"),
+        ToolParameter(name="code_folded", type="boolean", description="Collapse this cell's code in the UI so only its rendered output shows (purely cosmetic — the source is still always readable via read_notebook/get_output, folding doesn't hide it from tools). Omit to leave unchanged on replace, or default to unfolded on insert.", required=false),
+        ToolParameter(name="session", type="string", description="Which connect session to use", required=false, default="default"),
     ],
     handler=(args -> @safely begin
         result = notebook_edit(_conn(args["session"]), get(args, "new_source", "");
@@ -108,11 +108,11 @@ pluto_notebook_edit = MCPTool(
 )
 
 pluto_run_cells = MCPTool(
-    name="pluto_run_cells",
-    description="Run (or re-run) the given cells. Returns immediately — poll with pluto_get_output for results.",
+    name="run_cells",
+    description="Run (or re-run) the given cells. Returns immediately — poll with get_output for results.",
     parameters=[
         ToolParameter(name="cell_ids", type="array", description="List of cell UUIDs to run", required=true),
-        ToolParameter(name="session", type="string", description="Which pluto_connect session to use", required=false, default="default"),
+        ToolParameter(name="session", type="string", description="Which connect session to use", required=false, default="default"),
     ],
     handler=(args -> @safely begin
         run_cells(_conn(args["session"]), String.(args["cell_ids"]))
@@ -121,13 +121,35 @@ pluto_run_cells = MCPTool(
     return_type=TextContent,
 )
 
+pluto_run_all = MCPTool(
+    name="run_all",
+    description="Run every cell in the notebook. Returns immediately — poll individual cells with get_output for results. Use this after restart_kernel to bring the notebook back to a fully-evaluated state.",
+    parameters=[ToolParameter(name="session", type="string", description="Which connect session to use", required=false, default="default")],
+    handler=(args -> @safely begin
+        run_all(_conn(args["session"]))
+        _ok((ok=true,))
+    end),
+    return_type=TextContent,
+)
+
+pluto_restart_kernel = MCPTool(
+    name="restart_kernel",
+    description="Kill and restart the notebook's worker process (like Pluto's UI \"restart\" button, or a Jupyter kernel restart): all global state is lost. Cells are not re-run automatically — call run_all afterward.",
+    parameters=[ToolParameter(name="session", type="string", description="Which connect session to use", required=false, default="default")],
+    handler=(args -> @safely begin
+        restart_process(_conn(args["session"]))
+        _ok((ok=true,))
+    end),
+    return_type=TextContent,
+)
+
 pluto_get_output = MCPTool(
-    name="pluto_get_output",
+    name="get_output",
     description="Wait for a cell to finish running and return its output. Text/structured results come back as text; image (SVG/PNG/etc) results come back as a viewable image. errored=true means the cell threw — the message is in the returned text.",
     parameters=[
         ToolParameter(name="cell_id", type="string", description="Target cell UUID", required=true),
         ToolParameter(name="timeout", type="number", description="Seconds to wait", required=false, default=60),
-        ToolParameter(name="session", type="string", description="Which pluto_connect session to use", required=false, default="default"),
+        ToolParameter(name="session", type="string", description="Which connect session to use", required=false, default="default"),
     ],
     handler=(args -> @safely begin
         out = get_output(_conn(args["session"]), args["cell_id"]; timeout=Float64(get(args, "timeout", 60)))
@@ -142,22 +164,22 @@ pluto_get_output = MCPTool(
 )
 
 pluto_search_cells = MCPTool(
-    name="pluto_search_cells",
+    name="search_cells",
     description="Find cells whose source matches a substring or regex.",
     parameters=[
         ToolParameter(name="pattern", type="string", description="Substring or regex to search cell source for", required=true),
-        ToolParameter(name="session", type="string", description="Which pluto_connect session to use", required=false, default="default"),
+        ToolParameter(name="session", type="string", description="Which connect session to use", required=false, default="default"),
     ],
     handler=(args -> @safely _ok(search_cells(_conn(args["session"]), args["pattern"]))),
     return_type=TextContent,
 )
 
 pluto_find_definition = MCPTool(
-    name="pluto_find_definition",
+    name="find_definition",
     description="Find the cell that defines a given global variable/function name, using Pluto's own reactive dependency graph (exact, not text search). Pluto guarantees at most one cell defines any given name.",
     parameters=[
         ToolParameter(name="name", type="string", description="Global variable or function name", required=true),
-        ToolParameter(name="session", type="string", description="Which pluto_connect session to use", required=false, default="default"),
+        ToolParameter(name="session", type="string", description="Which connect session to use", required=false, default="default"),
     ],
     handler=(args -> @safely begin
         d = find_definition(_conn(args["session"]), args["name"])
@@ -167,33 +189,33 @@ pluto_find_definition = MCPTool(
 )
 
 pluto_list_dependencies = MCPTool(
-    name="pluto_list_dependencies",
+    name="list_dependencies",
     description="All names a cell references, mapped to the cell_id that defines each (or null if it resolves outside the notebook, e.g. Base/a package).",
     parameters=[
         ToolParameter(name="cell_id", type="string", description="Target cell UUID", required=true),
-        ToolParameter(name="session", type="string", description="Which pluto_connect session to use", required=false, default="default"),
+        ToolParameter(name="session", type="string", description="Which connect session to use", required=false, default="default"),
     ],
     handler=(args -> @safely _ok(list_dependencies(_conn(args["session"]), args["cell_id"]))),
     return_type=TextContent,
 )
 
 pluto_find_dependents = MCPTool(
-    name="pluto_find_dependents",
+    name="find_dependents",
     description="Cells that depend on (reference) a given name.",
     parameters=[
         ToolParameter(name="name", type="string", description="Global variable or function name", required=true),
-        ToolParameter(name="session", type="string", description="Which pluto_connect session to use", required=false, default="default"),
+        ToolParameter(name="session", type="string", description="Which connect session to use", required=false, default="default"),
     ],
     handler=(args -> @safely _ok(find_dependents(_conn(args["session"]), args["name"]))),
     return_type=TextContent,
 )
 
 pluto_render_png = MCPTool(
-    name="pluto_render_png",
+    name="render_png",
     description="Get a cell's plot as a guaranteed PNG image, regardless of its native output format (e.g. SVG). Re-runs the cell's code wrapped in savefig — cheap for a plot, wasteful for an expensive underlying computation.",
     parameters=[
         ToolParameter(name="cell_id", type="string", description="Target cell UUID", required=true),
-        ToolParameter(name="session", type="string", description="Which pluto_connect session to use", required=false, default="default"),
+        ToolParameter(name="session", type="string", description="Which connect session to use", required=false, default="default"),
     ],
     handler=(args -> @safely begin
         tmp_path = tempname() * ".png"
@@ -209,7 +231,7 @@ pluto_render_png = MCPTool(
 
 const ALL_TOOLS = [
     pluto_connect, pluto_new_notebook, pluto_list_notebooks, pluto_read_notebook,
-    pluto_notebook_edit, pluto_run_cells, pluto_get_output,
+    pluto_notebook_edit, pluto_run_cells, pluto_run_all, pluto_restart_kernel, pluto_get_output,
     pluto_search_cells, pluto_find_definition, pluto_list_dependencies,
     pluto_find_dependents, pluto_render_png,
 ]

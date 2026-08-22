@@ -10,7 +10,7 @@ include("client.jl")
 include("server.jl")
 
 export connect_pluto, new_notebook, notebook_source, list_notebooks, close_pluto, resync!,
-    notebook_edit, run_cells, run_all,
+    notebook_edit, run_cells, run_all, restart_process,
     read_notebook, get_code, search_cells,
     find_definition, list_dependencies, find_dependents,
     get_output, cell_status, save_png,
