@@ -40,22 +40,28 @@ claude mcp add pluto -- julia --project=/path/to/PlutoMCP /path/to/PlutoMCP/bin/
 
 ## Tools
 
+Tool names are local to the server — an MCP client sees them namespaced (e.g. `mcp__pluto__connect`), same as Claude Code's own `NotebookEdit`.
+
 | Tool | Purpose |
 |---|---|
-| `pluto_connect` | Attach to a notebook on an already-running Pluto server. |
-| `pluto_new_notebook` | Create an empty notebook on an already-running server and attach to it. |
-| `pluto_list_notebooks` | See what's open on a server. |
-| `pluto_read_notebook` | List cells + their current outputs, without running anything. |
-| `pluto_notebook_edit` | Replace / insert / delete a cell — same shape as editing a `.ipynb`. |
-| `pluto_run_cells` | Run (or re-run) cells. |
-| `pluto_get_output` | Wait for a cell and get its result — text, or a viewable image. |
-| `pluto_search_cells` | Find cells by source text. |
-| `pluto_find_definition` | Find the cell that defines a variable, via Pluto's real dependency graph. |
-| `pluto_list_dependencies` | What a cell depends on, and where each dependency is defined. |
-| `pluto_find_dependents` | What depends on a given variable. |
-| `pluto_render_png` | Guaranteed-PNG plot output, whatever the cell's native format. |
-| `pluto_start` *(managed mode)* | Start a fresh, PlutoMCP-managed Pluto server. |
-| `pluto_create_notebook` *(managed mode)* | Author a whole notebook's cells in one shot and open it — faster than building one cell-by-cell for an initial structure (title, sections, functions, a chart). |
+| `connect` | Attach to a notebook on an already-running Pluto server. |
+| `new_notebook` | Create an empty notebook on an already-running server and attach to it. |
+| `list_notebooks` | See what's open on a server. |
+| `read_notebook` | List cells + their current outputs, without running anything. |
+| `notebook_edit` | Replace / insert / delete a cell — same shape as editing a `.ipynb`. |
+| `run_cells` | Run (or re-run) specific cells. |
+| `run_all` | Run every cell in the notebook. |
+| `restart_kernel` | Kill and restart the notebook's worker process (like Pluto's UI "restart" button) — all global state is lost; follow with `run_all`. |
+| `get_output` | Wait for a cell and get its result — text, or a viewable image. |
+| `search_cells` | Find cells by source text. |
+| `find_definition` | Find the cell that defines a variable, via Pluto's real dependency graph. |
+| `list_dependencies` | What a cell depends on, and where each dependency is defined. |
+| `find_dependents` | What depends on a given variable. |
+| `render_png` | Guaranteed-PNG plot output, whatever the cell's native format. |
+| `start` *(managed mode)* | Start a fresh, PlutoMCP-managed Pluto server. |
+| `create_notebook` *(managed mode)* | Author a whole notebook's cells in one shot and open it — faster than building one cell-by-cell for an initial structure (title, sections, functions, a chart). |
+| `open_notebook` *(managed mode)* | Open an existing `.jl` notebook file by path and connect to it. |
+| `stop` *(managed mode)* | Shut down a managed Pluto server: its HTTP server and every notebook's worker process. |
 
 ## Known limitations
 
