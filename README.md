@@ -23,6 +23,64 @@ Three consequences, and they are the whole design:
 Pluto's reactive dependency graph is used rather than guessed at: cells are
 named for what they define, and nothing here parses Julia source.
 
+## Why Pluto rather than `.ipynb`
+
+Most of what makes Pluto pleasant for a person turns out to matter *more* for an
+assistant, because an assistant cannot see the screen.
+
+**There is no hidden state to reason about.** A Jupyter kernel's state is the
+history of every cell anyone ran, in whatever order they ran it. A variable can
+outlive the cell that defined it; running top to bottom may not reproduce what
+you are looking at. An agent editing such a notebook is guessing about state it
+cannot observe. In Pluto the notebook *is* the state: edit a cell and everything
+depending on it re-runs. There is no execution order to remember, so `edit` is
+the whole operation — you never have to work out what else to re-run.
+
+**The dependency graph is queryable, not inferred.** Pluto computes which cell
+defines which global and what each cell depends on, and exposes it. "What breaks
+if I change this?" has an exact answer instead of a grep. That graph is also
+where cell *names* come from — `abl = read_curve(...)` is the cell named `abl`.
+An `.ipynb` cell has no comparable identity: nbformat 4.5 ids are opaque, and
+position changes as soon as anyone inserts a cell.
+
+**One definition per cell is enforced**, which is what makes those names unique
+and stable. It is a real constraint, not free.
+
+**The file is code.** A Pluto notebook is a valid `.jl` file — it parses as
+Julia and runs as a script. An `.ipynb` is JSON with outputs embedded, so diffs
+are noisy, merges are painful, and re-running a notebook rewrites the file even
+when nothing changed.
+
+**Dependencies install themselves, and the notebook carries them.** Write
+`using Plots` in a cell and Pluto installs it, into an environment scoped to
+that notebook, and records the resolved versions *inside the notebook file*
+(`PLUTO_PROJECT_TOML_CONTENTS` / `PLUTO_MANIFEST_TOML_CONTENTS`). One `.jl` file
+is the code, the outputs' provenance, and a pinned, reproducible environment.
+
+For an assistant this deletes an entire category of work and of failure. There
+is no `Pkg.add` step, no environment to activate, no kernel to restart after
+installing something, and no way to leave the notebook working on this machine
+because of a package the next person does not have. You write the `using` line
+and it is true. Compare the `.ipynb` equivalent: shell out to a package manager,
+hope it targeted the same environment the kernel is using, restart, re-run —
+each step something an agent can get subtly wrong and not notice.
+
+One thing to know: **calling `Pkg.activate` in a notebook turns all of this
+off.** Pluto hands the environment over to you, the notebook stops recording its
+own dependencies, and it is then only as reproducible as whatever you activated.
+That is the right choice when a notebook must share an existing project
+environment, and the wrong one by accident. Prefer a bare `using`.
+
+**A person can watch.** The server pushes state to every connected client, so an
+assistant's edits appear in a browser tab as they happen, and the human's edits
+come straight back. That two-way loop is the point of this package, and it is
+the default in Pluto rather than something to configure.
+
+**When `.ipynb` is still the right answer:** the work is already in one; it is
+not Julia; you need GitHub to render it, or the wider ecosystem of viewers and
+converters; or the workflow genuinely wants to redefine a global in several
+places, which Pluto forbids by design.
+
 ## Setup
 
 ```sh

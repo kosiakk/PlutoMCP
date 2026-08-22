@@ -78,7 +78,9 @@ pluto_create = MCPTool(
     name="create",
     description="""Author a whole notebook in one call and open it — faster than adding cells one at a time.
 
-Pluto runs cells in DEPENDENCY order, not top-to-bottom, and allows only one definition of a global per cell. Prefer `x = let ... end` over `begin ... end` for a one-off computation: a `let` defines exactly one name, so it creates one dependency edge instead of several.""",
+Pluto runs cells in DEPENDENCY order, not top-to-bottom, and allows only one definition of a global per cell. Prefer `x = let ... end` over `begin ... end` for a one-off computation: a `let` defines exactly one name, so it creates one dependency edge instead of several.
+
+Dependencies install themselves: just write `using Plots` in a cell. Pluto installs it into an environment scoped to this notebook and records the resolved versions inside the notebook file, so no Pkg.add step and no restart are needed. Do NOT call Pkg.activate unless the notebook must share an existing project — it switches Pluto's package management off, and the notebook stops recording its own dependencies.""",
     parameters=[
         ToolParameter(name="cells", type="array", description="Cell sources, in display order", required=true),
         ToolParameter(name="cell_types", type="array", description="Same length as cells: \"code\" or \"markdown\" (default: all code)", required=false),
