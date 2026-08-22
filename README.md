@@ -16,17 +16,21 @@ One deliberate design choice: Pluto tracks a full reactive dependency graph inte
 
 ## Setup
 
-```julia
-julia> import Pkg; Pkg.instantiate()  # from this package's directory
+Not yet registered in Julia's General registry (see [Status](#status)), so install by cloning rather than `Pkg.add("PlutoMCP")`:
+
+```bash
+git clone https://github.com/kosiakk/PlutoMCP.git
+cd PlutoMCP
+julia --project=. -e 'import Pkg; Pkg.instantiate()'
 ```
 
-Point your MCP client at `bin/pluto_mcp_server.jl` (stdio transport):
+Point your MCP client at `bin/pluto_mcp_server.jl` (stdio transport), using the path you cloned into:
 
 ```bash
 claude mcp add pluto -- julia --project=/path/to/PlutoMCP /path/to/PlutoMCP/bin/pluto_mcp_server.jl
 ```
 
-(Or wire it into whatever config your MCP client uses for a stdio server — the command is just `julia --project=<this dir> -e 'using PlutoMCP; PlutoMCP.run_server()'`.)
+(Or wire it into whatever config your MCP client uses for a stdio server — the command is just `julia --project=<clone dir> -e 'using PlutoMCP; PlutoMCP.run_server()'`.)
 
 ## Two modes, one server
 
