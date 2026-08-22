@@ -134,7 +134,7 @@ work, wait that long, and return either the finished result or:
 ```
 
 That is neither an error nor a timeout. The cell is still going, the browser
-already shows it running, and `status` — optionally with `wait` — says when it
+already shows it running, and `status` waits for it and says when it
 is done.
 
 ## Concurrent editing is the point

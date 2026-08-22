@@ -29,14 +29,19 @@ _block(args) = Float64(get(args, "block", 1.0))
 """Shape a run result the same way whether it finished inside the deadline or not."""
 function _run_result(nb, targets, finished, waited)
     labels = cell_labels(nb)
+    # `errored` is reported whether or not the run finished: a failure that
+    # appeared while other cells are still going is exactly what you want first.
+    errored = [labels[string(c.cell_id)] for c in nb.cells if c.errored]
     base = (finished = finished,
             waited_s = round(waited; digits=2),
             ran = length(targets),
+            errored = errored,
             cells = [cell_info(nb, c, labels) for c in targets])
-    finished ?
-        merge(base, (errored = [labels[string(c.cell_id)] for c in targets if c.errored],)) :
-        merge(base, (still_running = [labels[string(c.cell_id)] for c in targets if c.running || c.queued],
-                     hint = "Still running — the browser is already showing it. Call status to see when it finishes; nothing is lost by waiting."))
+    finished && return base
+    merge(base, (still_running = [labels[string(c.cell_id)] for c in nb.cells if c.running || c.queued],
+                 hint = isempty(errored) ?
+                     "Still running — the browser already shows it. Call status to wait for the rest." :
+                     "Returned as soon as a cell errored; other cells are still running. Fix the error, or call status to wait for the rest."))
 end
 
 const CELL_REF_DOC = "A cell NAME (a global it defines, e.g. \"throughput\"), a full UUID, or an unambiguous UUID prefix."
@@ -193,16 +198,18 @@ pluto_status = MCPTool(
 
 Covers changes made by a HUMAN in the browser as well as your own: it is backed by Pluto's StateChangeEvent hook, so it costs no polling. Pass the previous result's `now` back as `since` to count only what happened in between.
 
-Set `wait` to block until the notebook goes idle — the right way to follow up a run that returned `finished=false`.""",
+Waits up to `block` seconds for the notebook to go idle, so following up a run that returned `finished=false` is one call rather than a poll loop. Returns immediately when nothing is running, and stops waiting the moment a cell errors.""",
     parameters=[
         ToolParameter(name="since", type="number", description="Unix time to count changes from; omit for everything recorded", required=false),
-        ToolParameter(name="wait", type="number", description="Seconds to wait for the notebook to become idle (default 0, do not wait)", required=false, default=0),
+        ToolParameter(name="block", type="number", description="Seconds to wait for the notebook to go idle (default 1). Costs nothing when it already is — the wait ends the moment nothing is running. Raise it to follow a long run to completion.", required=false, default=1),
         ToolParameter(name="session", type="string", description="Which session", required=false, default="default"),
     ],
     handler=(args -> @safely begin
         name = _sess(args); nb = _notebook(name)
-        deadline = time() + Float64(get(args, "wait", 0))
-        while !isempty(busy_cells(nb)) && time() < deadline
+        deadline = time() + _block(args)
+        errored_before = Set(c.cell_id for c in nb.cells if c.errored)
+        while !isempty(busy_cells(nb)) && time() < deadline &&
+              !any(c -> c.errored && !(c.cell_id in errored_before), nb.cells)
             sleep(0.05)
         end
         v = get(CHANGES, String(name), Float64[])
@@ -232,15 +239,19 @@ Images come back viewable. SVG is withheld by default — a plot is ~100 KB of m
     handler=(args -> @safely begin
         nb = _notebook(_sess(args)); c = resolve_cell(nb, args["cell_id"])
         mime = string(c.output.mime); body = c.output.body
-        if mime == "image/svg+xml" && !get(args, "raw", false)
+        astext(b) = b isa Vector{UInt8} ? String(copy(b)) : string(b)
+        # SVG is handled entirely here, both ways. It also matches "image/*", so
+        # letting it reach the image branch would return a picture for raw=true
+        # and never the markup that flag exists to ask for.
+        if mime == "image/svg+xml"
+            get(args, "raw", false) && return _ok((mime=mime, errored=c.errored, body=astext(body)))
             n = body === nothing ? 0 : (body isa AbstractString ? sizeof(body) : length(body))
             _ok((mime=mime, errored=c.errored, bytes=n, body="<SVG withheld: $n bytes>",
                  hint="Call png for a viewable image, or output with raw=true for the markup."))
         elseif startswith(mime, "image/") && body isa Vector{UInt8}
             ImageContent(data=body, mime_type=mime)
         else
-            _ok((mime=mime, errored=c.errored,
-                 body = body isa Vector{UInt8} ? String(copy(body)) : string(body)))
+            _ok((mime=mime, errored=c.errored, body=astext(body)))
         end
     end),
     return_type=Content,

@@ -145,6 +145,10 @@ end
     resolve_cell(nb, ref) -> Pluto.Cell
 
 Accept a name, a UUID, or an unambiguous UUID prefix.
+
+Cell ids are `uuid1`, which is time-based: cells created in the same instant
+share their leading digits, so a short prefix is often ambiguous. That is
+reported rather than resolved arbitrarily.
 """
 function resolve_cell(nb::Pluto.Notebook, ref::AbstractString)
     for c in nb.cells
@@ -202,8 +206,14 @@ minutes, and blocking on that is worse. So: start, wait briefly, say which
 happened.
 
 `finished=false` is neither an error nor a timeout. The cells are still running,
-the browser already shows them running, and `status` reports when they are
-done.
+the browser already shows them running, and `status` reports when they are done.
+
+Returns as soon as a cell newly errors, rather than serving out the remaining
+deadline: the rest of a reactive run cannot un-break it.
+
+This is bounded by Pluto running a notebook's cells sequentially in one worker.
+An error cannot be reported before the cell producing it has had its turn, so a
+long-running cell ahead of it in the queue still has to finish first.
 """
 function run_with_deadline(name::AbstractString, cells::Vector{Pluto.Cell};
                            block::Real=1.0, save::Bool=true)
@@ -216,6 +226,7 @@ function run_with_deadline(name::AbstractString, cells::Vector{Pluto.Cell};
     # begun. A target whose last_run_timestamp advanced has genuinely re-run;
     # `saw_busy` covers slower cells whose timestamps advance later.
     before = Dict(c.cell_id => c.output.last_run_timestamp for c in cells)
+    errored_before = Set(c.cell_id for c in nb.cells if c.errored)
     Pluto.update_save_run!(s.session, nb, cells; run_async=true, save)
 
     # Notebook-wide, so a fast target with slow DEPENDENTS still reads as busy.
@@ -224,11 +235,17 @@ function run_with_deadline(name::AbstractString, cells::Vector{Pluto.Cell};
         !haskey(nb.cells_dict, c.cell_id) ||
             c.output.last_run_timestamp > get(before, c.cell_id, -Inf)
     end
+    # Only NEW errors are worth stopping for; a notebook can already contain an
+    # unrelated broken cell, and that is not news about this run.
+    new_error() = any(c -> c.errored && !(c.cell_id in errored_before), nb.cells)
 
     t0 = time(); saw_busy = false
     while time() - t0 < block
         saw_busy |= busy()
         !busy() && (saw_busy || advanced()) && return (true, time() - t0)
+        # Surface a failure the moment it happens rather than serving out the
+        # deadline: the rest of a reactive run cannot un-break it.
+        new_error() && return (!busy(), time() - t0)
         sleep(0.02)
     end
     return (!busy() && (saw_busy || advanced()), time() - t0)
@@ -242,7 +259,10 @@ function notebook_source(cells::Vector{String};
                          cell_types::Vector{String}=fill("code", length(cells)))
     length(cell_types) == length(cells) ||
         error("cell_types has $(length(cell_types)) entries for $(length(cells)) cells")
-    ids = [uuid1() for _ in cells]
+    # uuid4, not uuid1: uuid1 is time-based, and cells generated in a loop land
+    # in the same tick, so their ids share a long leading run of digits and a
+    # short prefix identifies nothing. Random ids make prefixes discriminating.
+    ids = [uuid4() for _ in cells]
     io = IOBuffer()
     println(io, "### A Pluto.jl notebook ###")
     println(io, "# v0.20.4")
