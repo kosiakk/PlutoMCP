@@ -8,11 +8,9 @@ HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
 JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
 ModelContextProtocol = "c58f755f-f2a7-4f48-bf29-4e9659b78499"
 MsgPack = "99f44e22-a591-53d1-9472-aa23ef4bd671"
+Pluto = "c3e4b0f8-55cb-11ea-2926-15256bba5781"
 Sockets = "6462fe0b-24de-5631-8697-dd941f90decc"
 UUIDs = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"
-
-[weakdeps]
-Pluto = "c3e4b0f8-55cb-11ea-2926-15256bba5781"
 
 [extensions]
 PlutoMCPPlutoExt = "Pluto"
