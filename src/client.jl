@@ -27,8 +27,12 @@ mutable struct Conn
     task::Task
     client_id::String
     notebook_id::String
-    inbox::Channel{Any}
     state::Ref{Any}   # mirrors the server's notebook_to_js(notebook) dict
+    # Set by `_recv_loop` when the socket closes or the loop dies. Without it,
+    # a dead connection is indistinguishable from a slow cell: `get_output`
+    # polls a frozen `state` and reports "timed out waiting for cell X", which
+    # sends you looking at the notebook instead of at the transport.
+    dead::Ref{Any}    # nothing while healthy, else the Exception / :closed
 end
 
 struct CellOutput
@@ -61,19 +65,35 @@ function _apply_patch!(conn::Conn, patch)
     end
 end
 
+"""
+Applies every incoming patch to `conn.state[]` for the connection's lifetime.
+
+This loop must NEVER block. It previously pushed each decoded message into a
+bounded `Channel{Any}(256)` that nothing ever read: after 256 messages `put!`
+blocked forever, the loop stopped applying patches, and `conn.state[]` froze
+with every cell still marked `queued` by `run_cells`. The visible symptoms were
+`get_output` timing out on cells that had finished milliseconds earlier, and the
+server growing to several GB as undrained websocket data backed up. If a message
+log is ever wanted here, it has to be a DROPPING buffer, never a blocking one.
+"""
 function _recv_loop(conn::Conn)
-    for msg in conn.ws
-        data = MsgPack.unpack(msg)
-        put!(conn.inbox, data)
-        if get(data, "type", nothing) == "notebook_diff" && haskey(data, "message")
-            for patch in get(data["message"], "patches", [])
-                try
-                    _apply_patch!(conn, patch)
-                catch e
-                    @warn "failed to apply patch, skipping" patch exception = (e, catch_backtrace())
+    try
+        for msg in conn.ws
+            data = MsgPack.unpack(msg)
+            if get(data, "type", nothing) == "notebook_diff" && haskey(data, "message")
+                for patch in get(data["message"], "patches", [])
+                    try
+                        _apply_patch!(conn, patch)
+                    catch e
+                        @warn "failed to apply patch, skipping" patch exception = (e, catch_backtrace())
+                    end
                 end
             end
         end
+        conn.dead[] = :closed
+    catch e
+        conn.dead[] = e
+        rethrow()
     end
 end
 
@@ -108,12 +128,12 @@ socket exists, without waiting for the (indefinite) message loop.
 function connect_pluto(host::String, secret::String, notebook_id::String)
     url = "ws://$host/?secret=$secret"
     client_id = string(uuid4())[1:8]
-    inbox = Channel{Any}(256)
     state = Ref{Any}(Dict{Any,Any}())
+    dead = Ref{Any}(nothing)
     ready = Channel{Conn}(1)
 
     @async HTTP.WebSockets.open(url) do ws
-        conn = Conn(ws, current_task(), client_id, notebook_id, inbox, state)
+        conn = Conn(ws, current_task(), client_id, notebook_id, state, dead)
         put!(ready, conn)
         _recv_loop(conn)
     end
@@ -301,6 +321,17 @@ function run_cells(conn::Conn, cell_ids::Vector{String})
 end
 run_all(conn::Conn) = run_cells(conn, collect(String.(get(conn.state[], "cell_order", []))))
 
+"""
+    restart_process(conn::Conn)
+
+Kills and restarts the notebook's worker process (Pluto's "restart" button —
+same effect as a Jupyter kernel restart): all global state is lost, but
+cells and their last-computed outputs stay in `conn.state[]` until
+something re-runs them. Follow up with `run_all` to bring the notebook
+back to a fully-evaluated state.
+"""
+restart_process(conn::Conn) = _send(conn, "restart_process", Dict())
+
 # ---------------------------------------------------------- introspection ----
 
 """
@@ -399,9 +430,16 @@ function get_output(conn::Conn, cell_id::String; timeout::Real=60)
             unwrapped = raw_body isa MsgPack.Extension ? raw_body.data : raw_body
             return CellOutput(string(get(output, "mime", "text/plain")), unwrapped, errored)
         end
+        # A frozen `state` and a slow cell look identical from here, so check the
+        # transport before blaming the notebook.
+        if conn.dead[] !== nothing
+            error("connection to Pluto is dead ($(conn.dead[])); cell $cell_id " *
+                  "may well have finished. Reconnect and re-read rather than re-running.")
+        end
         sleep(0.15)
     end
-    error("timed out waiting for cell $cell_id")
+    error("timed out waiting for cell $cell_id after $(timeout)s " *
+          "(status: $(cell_status(conn, cell_id)))")
 end
 
 function cell_status(conn::Conn, cell_id::String)
