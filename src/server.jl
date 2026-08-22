@@ -62,6 +62,23 @@ pluto_list_notebooks = MCPTool(
     return_type=TextContent,
 )
 
+pluto_new_notebook = MCPTool(
+    name="pluto_new_notebook",
+    description="Create a brand-new empty notebook on the Pluto server and connect to it. Use this to start a fresh notebook rather than editing an existing one.",
+    parameters=[
+        ToolParameter(name="host", type="string", description="Pluto server host:port", required=true),
+        ToolParameter(name="secret", type="string", description="Pluto's access secret", required=true),
+        ToolParameter(name="session", type="string", description="Name to refer to this connection by in later calls", required=false, default="default"),
+    ],
+    handler=(args -> @safely begin
+        nb_id = new_notebook(args["host"], args["secret"])
+        conn = connect_pluto(args["host"], args["secret"], nb_id)
+        SESSIONS[args["session"]] = conn
+        _ok((session=args["session"], notebook_id=nb_id))
+    end),
+    return_type=TextContent,
+)
+
 pluto_read_notebook = MCPTool(
     name="pluto_read_notebook",
     description="List all cells (id, code, current output mime, errored) in display order. Does not run anything.",
@@ -190,7 +207,7 @@ pluto_render_png = MCPTool(
 )
 
 const ALL_TOOLS = [
-    pluto_connect, pluto_list_notebooks, pluto_read_notebook,
+    pluto_connect, pluto_new_notebook, pluto_list_notebooks, pluto_read_notebook,
     pluto_notebook_edit, pluto_run_cells, pluto_get_output,
     pluto_search_cells, pluto_find_definition, pluto_list_dependencies,
     pluto_find_dependents, pluto_render_png,

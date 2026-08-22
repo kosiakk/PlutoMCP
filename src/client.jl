@@ -121,6 +121,21 @@ end
 
 list_notebooks(host::String, secret::String) = MsgPack.unpack(HTTP.get("http://$host/notebooklist?secret=$secret").body)
 
+"""
+    new_notebook(host, secret) -> notebook_id
+
+Creates a brand-new empty notebook on the server (via Pluto's `GET /new`,
+which 302-redirects to `./edit?id=<uuid>`) and returns its id, ready to
+pass to `connect_pluto`.
+"""
+function new_notebook(host::String, secret::String)
+    r = HTTP.get("http://$host/new?secret=$secret"; redirect=false, status_exception=false)
+    loc = HTTP.header(r, "Location")
+    m = match(r"id=([0-9a-fA-F-]{36})", loc)
+    m === nothing && error("new_notebook: couldn't parse notebook id from redirect \"$loc\"")
+    return String(m.captures[1])
+end
+
 close_pluto(conn::Conn) = close(conn.ws)
 
 # ------------------------------------------------------------ cell CRUD ----

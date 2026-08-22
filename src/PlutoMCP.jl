@@ -9,7 +9,7 @@ using ModelContextProtocol
 include("client.jl")
 include("server.jl")
 
-export connect_pluto, list_notebooks, close_pluto, resync!,
+export connect_pluto, new_notebook, list_notebooks, close_pluto, resync!,
     notebook_edit, run_cells, run_all,
     read_notebook, get_code, search_cells,
     find_definition, list_dependencies, find_dependents,
