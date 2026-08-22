@@ -217,6 +217,7 @@ Waits up to `block` seconds for the notebook to go idle, so following up a run t
         labels = cell_labels(nb)
         busy = busy_cells(nb)
         _ok((idle = isempty(busy),
+             questions_waiting = length(get(INBOX, String(name), Any[])),
              running = [labels[string(c.cell_id)] for c in busy],
              errored = [labels[string(c.cell_id)] for c in nb.cells if c.errored],
              changes = count(>(since), v),
@@ -304,8 +305,26 @@ pluto_stop = MCPTool(
     return_type=TextContent,
 )
 
+pluto_questions = MCPTool(
+    name="questions",
+    description="""Questions the user asked from the notebook UI, and a hint of what they were looking at.
+
+Pluto's "Ask AI" panel normally builds a prompt for someone to paste into a chat elsewhere. When this session is attached, it sends the question here instead, together with the context Pluto assembled: the cell, its code, its output, and the cells it depends on.
+
+Each question is returned once and then cleared, so poll this after `status` reports changes, or whenever the user says they asked something. Answer by editing the notebook — that is the whole point of being attached to it.""",
+    parameters=[ToolParameter(name="session", type="string", description="Which session", required=false, default="default")],
+    handler=(args -> @safely begin
+        name = _sess(args)
+        _session(name)                       # fail clearly if there is no session
+        qs = take_questions!(name)
+        _ok((count=length(qs), questions=qs))
+    end),
+    return_type=TextContent,
+)
+
 const ALL_TOOLS = [pluto_start, pluto_open, pluto_create, pluto_read, pluto_edit,
-                   pluto_run, pluto_status, pluto_output, pluto_png, pluto_stop]
+                   pluto_run, pluto_status, pluto_output, pluto_png,
+                   pluto_questions, pluto_stop]
 
 function build_server()
     mcp_server(

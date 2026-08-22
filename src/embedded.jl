@@ -29,6 +29,33 @@ const SESSIONS = Dict{String,Any}()
 const CHANGES = Dict{String,Vector{Float64}}()
 const CHANGES_MAX = 256
 
+"What the notebook UI calls the attached assistant on its button."
+const ASSISTANT_NAME = Ref("Claude")
+
+# Questions a human asked from the notebook UI, newest last. Also a DROPPING
+# buffer: an inbox that can block is a way to hang the notebook from the UI.
+const INBOX = Dict{String,Vector{Any}}()
+const INBOX_MAX = 64
+
+function _note_question!(name::String, q)
+    v = get!(INBOX, name, Any[])
+    push!(v, (cell_id = q.cell_id, question = q.question, context = q.context, at = q.at))
+    length(v) > INBOX_MAX && deleteat!(v, 1:(length(v) - INBOX_MAX))
+    return nothing
+end
+
+"""
+    take_questions!(name) -> Vector
+
+Everything asked since the last call, removed from the inbox as it is handed
+over: a question read twice is a question answered twice.
+"""
+function take_questions!(name::AbstractString)
+    v = get(INBOX, String(name), Any[])
+    out = copy(v); empty!(v)
+    return out
+end
+
 function _note_change!(name::String)
     v = get!(CHANGES, name, Float64[])
     push!(v, time())
@@ -71,6 +98,14 @@ function start_session(name::AbstractString; port::Union{Nothing,Int}=nothing)
     server = Pluto.run!(session)
     SESSIONS[nm] = (host="localhost:$port", secret=session.secret,
                     session=session, server=server, notebook=Ref{Any}(nothing))
+
+    # Announce ourselves to the notebook UI, where Pluto supports it. The "Ask
+    # AI" panel then sends questions straight here instead of producing text for
+    # someone to paste into a chat elsewhere. Guarded, because stock Pluto has
+    # no such hook and must keep working.
+    if isdefined(Pluto, :attach_assistant!)
+        Pluto.attach_assistant!(q -> _note_question!(nm, q); name=ASSISTANT_NAME[])
+    end
     return SESSIONS[nm]
 end
 
@@ -79,6 +114,8 @@ function stop_session(name::AbstractString)
     close(s.server)
     delete!(SESSIONS, String(name))
     delete!(CHANGES, String(name))
+    delete!(INBOX, String(name))
+    isdefined(Pluto, :detach_assistant!) && Pluto.detach_assistant!()
     return nothing
 end
 

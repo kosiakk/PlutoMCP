@@ -287,6 +287,35 @@ end
     @test call("output", Dict("session" => S, "cell_id" => "doubled")).body == "42"
 end
 
+@testset "questions from the notebook UI" begin
+    # The inbox is what Pluto's "Ask AI" panel delivers into when this session is
+    # attached as the assistant. That hook exists only in a Pluto that has it;
+    # the buffer itself is testable either way.
+    @test call("questions", Dict("session" => S)).count == 0
+
+    P._note_question!(S, (cell_id = "c1", question = "why?", context = "<ctx/>", at = time()))
+    P._note_question!(S, (cell_id = "c2", question = "and this?", context = "", at = time()))
+
+    @test call("status", Dict("session" => S)).questions_waiting == 2
+
+    q = call("questions", Dict("session" => S))
+    @test q.count == 2
+    @test q.questions[1].question == "why?"
+    @test q.questions[2].cell_id == "c2"
+
+    # Handed over once, then cleared: a question read twice is answered twice.
+    @test call("questions", Dict("session" => S)).count == 0
+    @test call("status", Dict("session" => S)).questions_waiting == 0
+
+    # Oldest are dropped rather than allowed to grow without bound.
+    for i in 1:(P.INBOX_MAX + 10)
+        P._note_question!(S, (cell_id = "c", question = "q$i", context = "", at = time()))
+    end
+    kept = call("questions", Dict("session" => S))
+    @test kept.count == P.INBOX_MAX
+    @test kept.questions[end].question == "q$(P.INBOX_MAX + 10)"
+end
+
 @testset "stop" begin
     @test call("stop", Dict("session" => S)).ok
     @test call("read", Dict("session" => S)).error       # session is gone

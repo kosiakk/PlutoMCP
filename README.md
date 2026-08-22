@@ -102,6 +102,7 @@ claude mcp add pluto -- julia --project=$HOME/Documents/PlutoMCP \
 | `status` | what is still running, and what changed since you last looked |
 | `output` | one cell's output |
 | `png` | render a plotting cell as an image |
+| `questions` | what the user asked from the notebook UI |
 | `stop` | shut the server down |
 
 `edit` follows `NotebookEdit`'s vocabulary: `cell_id`, `new_source`,
@@ -136,6 +137,22 @@ work, wait that long, and return either the finished result or:
 That is neither an error nor a timeout. The cell is still going, the browser
 already shows it running, and `status` waits for it and says when it
 is done.
+
+## The user can ask you something
+
+Pluto's "Ask AI" panel normally assembles context for a cell and asks you to
+copy it into a chat elsewhere. With a [patched
+Pluto](https://github.com/kosiakk/Pluto.jl/tree/assistant-direct-message), this
+session registers itself instead, the button becomes **Ask Claude**, and the
+question arrives here — along with the cell, its code, its output and what it
+depends on.
+
+The `questions` tool returns them, once each. `status` reports how many are
+waiting, so a poll you were already making surfaces them. Answer by editing the
+notebook, which is the entire point of being attached to it.
+
+On stock Pluto the registration is skipped and the panel behaves as it always
+has.
 
 ## Concurrent editing is the point
 
