@@ -95,12 +95,13 @@ pluto_notebook_edit = MCPTool(
         ToolParameter(name="cell_id", type="string", description="Target cell (required for replace/delete; anchor for insert)", required=false),
         ToolParameter(name="cell_type", type="string", description="\"code\" or \"markdown\" (markdown is emulated: source gets wrapped in md\"...\")", required=false, default="code"),
         ToolParameter(name="edit_mode", type="string", description="\"replace\", \"insert\", or \"delete\"", required=false, default="replace"),
+        ToolParameter(name="code_folded", type="boolean", description="Collapse this cell's code in the UI so only its rendered output shows (purely cosmetic — the source is still always readable via pluto_read_notebook/pluto_get_output, folding doesn't hide it from tools). Omit to leave unchanged on replace, or default to unfolded on insert.", required=false),
         ToolParameter(name="session", type="string", description="Which pluto_connect session to use", required=false, default="default"),
     ],
     handler=(args -> @safely begin
         result = notebook_edit(_conn(args["session"]), get(args, "new_source", "");
             cell_id=get(args, "cell_id", nothing), cell_type=get(args, "cell_type", "code"),
-            edit_mode=get(args, "edit_mode", "replace"))
+            edit_mode=get(args, "edit_mode", "replace"), code_folded=get(args, "code_folded", nothing))
         _ok((cell_id=result,))
     end),
     return_type=TextContent,

@@ -96,13 +96,29 @@ end
 `connect` handshake, then `reset_shared_state` to force Pluto to push a
 full notebook snapshot (the connect ack alone does not — this matches what
 the frontend does on (re)connect, see Editor.js `on_reconnect`).
+
+Uses `HTTP.WebSockets.open`'s do-block/callback form, not the "returns a
+handle directly" form — the latter only exists in HTTP.jl v2.x, and this
+package also needs to work with v1.x (which Pluto itself pins to when
+both are in the same environment, i.e. whenever managed mode is used).
+The do-block runs for the connection's whole lifetime inside a background
+task; `ready` hands the constructed `Conn` back to the caller once the
+socket exists, without waiting for the (indefinite) message loop.
 """
 function connect_pluto(host::String, secret::String, notebook_id::String)
     url = "ws://$host/?secret=$secret"
-    ws = HTTP.WebSockets.open(url)
     client_id = string(uuid4())[1:8]
-    conn = Conn(ws, current_task(), client_id, notebook_id, Channel{Any}(256), Ref{Any}(Dict{Any,Any}()))
-    conn.task = @async _recv_loop(conn)
+    inbox = Channel{Any}(256)
+    state = Ref{Any}(Dict{Any,Any}())
+    ready = Channel{Conn}(1)
+
+    @async HTTP.WebSockets.open(url) do ws
+        conn = Conn(ws, current_task(), client_id, notebook_id, inbox, state)
+        put!(ready, conn)
+        _recv_loop(conn)
+    end
+
+    conn = take!(ready)
     _send(conn, "connect", Dict(); notebook_id=notebook_id)
     sleep(0.3)
     resync!(conn)
@@ -218,7 +234,8 @@ markdown is just a cell whose code is an `md` string macro call):
 `new_source` is auto-wrapped unless it already starts with `md"`.
 """
 function notebook_edit(conn::Conn, new_source::String="";
-    cell_id::Union{Nothing,String}=nothing, cell_type::String="code", edit_mode::String="replace")
+    cell_id::Union{Nothing,String}=nothing, cell_type::String="code", edit_mode::String="replace",
+    code_folded::Union{Nothing,Bool}=nothing)
     if edit_mode == "delete"
         cell_id === nothing && error("notebook_edit: edit_mode=\"delete\" requires cell_id")
         new_order = filter(!=(cell_id), collect(String.(get(conn.state[], "cell_order", []))))
@@ -245,7 +262,7 @@ function notebook_edit(conn::Conn, new_source::String="";
         updates = [
             Dict("op" => "add", "path" => ["cell_inputs", new_id],
                 "value" => Dict("cell_id" => new_id, "code" => source,
-                    "code_folded" => false, "metadata" => Dict())),
+                    "code_folded" => something(code_folded, false), "metadata" => Dict())),
             Dict("op" => "replace", "path" => ["cell_order"], "value" => new_order),
         ]
         _send_update!(conn, updates)
@@ -254,8 +271,11 @@ function notebook_edit(conn::Conn, new_source::String="";
 
     # edit_mode == "replace"
     cell_id === nothing && error("notebook_edit: edit_mode=\"replace\" requires cell_id")
-    _send_update!(conn, [
-        Dict("op" => "replace", "path" => ["cell_inputs", cell_id, "code"], "value" => source)])
+    updates = [Dict("op" => "replace", "path" => ["cell_inputs", cell_id, "code"], "value" => source)]
+    if code_folded !== nothing
+        push!(updates, Dict("op" => "replace", "path" => ["cell_inputs", cell_id, "code_folded"], "value" => code_folded))
+    end
+    _send_update!(conn, updates)
     return cell_id
 end
 
@@ -284,21 +304,27 @@ run_all(conn::Conn) = run_cells(conn, collect(String.(get(conn.state[], "cell_or
 # ---------------------------------------------------------- introspection ----
 
 """
-    read_notebook(conn) -> Vector of (id, code, mime, errored)
+    read_notebook(conn) -> Vector of (id, code, mime, errored, code_folded)
 
 Mirrors `Read` on a `.ipynb`: cells *and* their currently-cached output
 together, in display order. Unlike `get_output`, this never blocks or
 triggers execution — it just reports whatever's already there (mime is
 `"unrun"` for a cell that hasn't executed yet).
+
+`code_folded` is Pluto's "hide this cell's code, show only its
+rendered output" UI toggle — purely cosmetic, the full source is always
+returned in `code` regardless (folding never removes it from what Pluto
+sends to any client). Surfaced so an agent can tell a cell is meant to
+read as prose/output-only, not because the source is otherwise hidden.
 """
 function read_notebook(conn::Conn)
     results = get(conn.state[], "cell_results", Dict())
     return [begin
-        code = conn.state[]["cell_inputs"][id]["code"]
+        input = conn.state[]["cell_inputs"][id]
         entry = get(results, id, nothing)
         mime = entry === nothing ? "unrun" : string(get(get(entry, "output", Dict()), "mime", "unrun"))
         errored = entry === nothing ? false : get(entry, "errored", false)
-        (id=id, code=code, mime=mime, errored=errored)
+        (id=id, code=input["code"], mime=mime, errored=errored, code_folded=get(input, "code_folded", false))
     end for id in String.(get(conn.state[], "cell_order", []))]
 end
 

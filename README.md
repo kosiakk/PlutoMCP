@@ -61,6 +61,7 @@ claude mcp add pluto -- julia --project=/path/to/PlutoMCP /path/to/PlutoMCP/bin/
 - **`Pluto.run!`'s auto-picked port isn't queryable after the fact**, so managed mode picks a free port itself first, then hands it to Pluto explicitly. A small race is possible (something else could grab the port in between).
 - **No output persistence.** Unlike Jupyter, Pluto keeps no results in the `.jl` file itself — only in the running process's memory. If the notebook's Julia process restarts, results are gone regardless of whether PlutoMCP was involved.
 - **Sequential edits are paced**, not confirmed. Firing several edits faster than a human would type was found to race against Pluto's own server-side handling; a short delay between them sidesteps it, but a proper fix would wait for server acknowledgment instead.
+- **`pluto_get_output`'s default 30s timeout can be too short for a cell run on a freshly-started managed-mode workspace** — the underlying worker *process* still spinning up looks identical to "not running yet" from a cell's `queued`/`running` flags alone, which is what `get_output` actually polls; it doesn't check Pluto's separate `process_status`. Pass a longer `timeout` for a notebook's first cell run after `pluto_start`, or just retry.
 
 ## Status
 
