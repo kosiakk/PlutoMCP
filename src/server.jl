@@ -6,6 +6,22 @@ Sessions are named (default: "default") so more than one Pluto notebook
 can be driven at once; each is a live `Conn` held in `SESSIONS` for the
 life of the server process — the whole point of a long-running MCP server
 is that this state persists across tool calls.
+
+CONCURRENT EDITING IS THE POINT, NOT AN EDGE CASE. The notebook is open in a
+browser and may be open to other sessions; a human can rewrite, reorder or
+delete any cell at any moment, including between two of our own calls. So:
+
+  - cached state is a snapshot, never the truth. Re-read before acting on it.
+  - a cell that is missing, renamed, or different from what we last wrote is
+    the NORMAL outcome of someone else working, not damage to be repaired.
+  - never "restore" a notebook to what a tool remembers. Report the difference
+    and let the human decide.
+
+This is not hypothetical: a cell whose markdown had been deliberately folded
+into a function docstring, plus a cell the user had deleted in the UI, were once
+read as a corrupted file and "fixed" — undoing intentional work. Absence is what
+deliberate editing looks like from the outside, so absence is never evidence of
+corruption.
 =#
 
 const SESSIONS = Dict{String,Conn}()
