@@ -48,11 +48,28 @@ Pluto already computes something better for its reactivity graph --
 read_curve(...)` is simply the cell named `abl`, and Pluto's own one-definition
 -per-cell rule is what makes those names unique.
 
-Cells that define nothing (markdown, plots, bare `let` blocks) keep their UUID.
-Deriving a name from a heading was tried and removed: `#` opens a Julia comment
-as well as a Markdown heading, so it named plot cells after whatever comment sat
-inside them, and the slugs it produced were neither identifiers nor short. A
-wrong name is worse than an honest UUID.
+**Every cell is always addressable by its UUID.** A name is a convenience for
+the cells that happen to have one, never a replacement — so anything Pluto does
+not report a definition for keeps its UUID, and that is a correct answer rather
+than a failure.
+
+**Pluto is the only source.** Do not re-derive names by parsing cell source:
+Pluto owns the reactivity graph, it already exposes every declaration and
+dependency, and a second implementation drifts from its semantics. Two attempts
+to be clever here were built and removed:
+
+  - names from markdown headings — `#` opens a Julia comment as well as a
+    Markdown heading, so plot cells got named after an incidental comment, and
+    the slugs were neither identifiers nor short;
+  - names from re-parsing docstringed definitions — a docstring becomes
+    `Core.@doc`, which ExpressionExplorer reports as a macrocall with no
+    `definitions`, so the reparse was an attempt to out-guess Pluto. It shipped
+    two bugs immediately (`Meta.parse` reads only the first form; the macro name
+    is a `GlobalRef`, not a `Symbol`), and it was solving a problem Pluto solves
+    itself once macros are expanded in a running notebook.
+
+A missing name is cheap. A wrong name is not: an unnamed cell in a listing was
+once read as evidence of a corrupted notebook.
 """
 function cell_labels(nb::Pluto.Notebook)
     top = Pluto.updated_topology(Pluto.NotebookTopology{Pluto.Cell}(), nb, nb.cells)
