@@ -65,12 +65,6 @@ and it is true. Compare the `.ipynb` equivalent: shell out to a package manager,
 hope it targeted the same environment the kernel is using, restart, re-run —
 each step something an agent can get subtly wrong and not notice.
 
-One thing to know: **calling `Pkg.activate` in a notebook turns all of this
-off.** Pluto hands the environment over to you, the notebook stops recording its
-own dependencies, and it is then only as reproducible as whatever you activated.
-That is the right choice when a notebook must share an existing project
-environment, and the wrong one by accident. Prefer a bare `using`.
-
 **A person can watch.** The server pushes state to every connected client, so an
 assistant's edits appear in a browser tab as they happen, and the human's edits
 come straight back. That two-way loop is the point of this package, and it is
