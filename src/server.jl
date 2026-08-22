@@ -15,6 +15,55 @@ function _conn(session::AbstractString)
     return SESSIONS[session]
 end
 
+"""
+Hooks that turn a human-written cell reference into a cell UUID.
+
+A UUID is a poor handle: not memorable, not greppable, and not stable across a
+notebook still being authored. Pluto already knows a far better name for most
+cells -- the symbol each one DEFINES -- but only the in-process API exposes it,
+so the Pluto extension registers a resolver here instead of this file reaching
+for something the websocket state never carries.
+
+Empty by default: with no resolver installed every reference passes through
+untouched and behaviour is exactly as before.
+"""
+const CELL_RESOLVERS = Function[]
+
+"""
+    _cell(session, ref) -> String
+
+Resolve `ref` -- a UUID, a UUID prefix, or a name like "throughput" -- to a
+cell UUID. An unresolvable reference is returned unchanged so it fails in the
+tool that uses it, with that tool's own error message, rather than here.
+"""
+function _cell(session::AbstractString, ref)
+    ref === nothing && return nothing
+    s = String(ref)
+    for r in CELL_RESOLVERS
+        hit = try r(session, s) catch; nothing end
+        hit === nothing || return hit
+    end
+    return s
+end
+
+_cellrefs(session::AbstractString, refs) = String[_cell(session, r) for r in refs]
+
+"""
+    _sniff_mime(bytes, declared) -> String
+
+Recover a byte body's real type when the declared one is not credible. Only
+consulted when a raw byte vector arrives labelled as text, which means the mime
+was absent from the notebook state rather than genuinely text.
+"""
+function _sniff_mime(body::Vector{UInt8}, declared::AbstractString)
+    length(body) < 4 && return declared
+    body[1:4] == UInt8[0x89, 0x50, 0x4e, 0x47] && return "image/png"
+    body[1:3] == UInt8[0xff, 0xd8, 0xff]       && return "image/jpeg"
+    head = lowercase(String(copy(body[1:min(end, 512)])))
+    (occursin("<svg", head) || (occursin("<?xml", head) && occursin("svg", head))) && return "image/svg+xml"
+    return declared
+end
+
 _ok(x) = TextContent(type="text", text=JSON3.write(x))
 _err(msg) = TextContent(type="text", text=JSON3.write(Dict("error" => true, "message" => msg)))
 
@@ -100,7 +149,7 @@ pluto_notebook_edit = MCPTool(
     ],
     handler=(args -> @safely begin
         result = notebook_edit(_conn(args["session"]), get(args, "new_source", "");
-            cell_id=get(args, "cell_id", nothing), cell_type=get(args, "cell_type", "code"),
+            cell_id=_cell(args["session"], get(args, "cell_id", nothing)), cell_type=get(args, "cell_type", "code"),
             edit_mode=get(args, "edit_mode", "replace"), code_folded=get(args, "code_folded", nothing))
         _ok((cell_id=result,))
     end),
@@ -115,7 +164,7 @@ pluto_run_cells = MCPTool(
         ToolParameter(name="session", type="string", description="Which connect session to use", required=false, default="default"),
     ],
     handler=(args -> @safely begin
-        run_cells(_conn(args["session"]), String.(args["cell_ids"]))
+        run_cells(_conn(args["session"]), _cellrefs(args["session"], args["cell_ids"]))
         _ok((ok=true,))
     end),
     return_type=TextContent,
@@ -149,15 +198,39 @@ pluto_get_output = MCPTool(
     parameters=[
         ToolParameter(name="cell_id", type="string", description="Target cell UUID", required=true),
         ToolParameter(name="timeout", type="number", description="Seconds to wait", required=false, default=60),
+        ToolParameter(name="raw", type="boolean", description="Return an SVG result's full markup instead of a size summary. SVG plots are ~100 KB of text that most clients cannot render inline; prefer render_png for a viewable image.", required=false, default=false),
         ToolParameter(name="session", type="string", description="Which connect session to use", required=false, default="default"),
     ],
     handler=(args -> @safely begin
-        out = get_output(_conn(args["session"]), args["cell_id"]; timeout=Float64(get(args, "timeout", 60)))
-        if startswith(out.mime, "image/") && out.body isa Vector{UInt8}
-            ImageContent(data=out.body, mime_type=out.mime)
+        out = get_output(_conn(args["session"]), _cell(args["session"], args["cell_id"]); timeout=Float64(get(args, "timeout", 60)))
+        mime = out.mime
+        # A raw byte body labelled text/* is a contradiction, and in practice it
+        # means the mime went missing from a patch and client.jl fell back to its
+        # "text/plain" default. Sniff the bytes rather than handing back
+        # "<115763 bytes, mime=text/plain>", which is useless AND misleading:
+        # it reads like a size cap when the real problem is a wrong label.
+        if out.body isa Vector{UInt8} && !startswith(mime, "image/")
+            mime = _sniff_mime(out.body, mime)
+        end
+        # SVG is text, so it would otherwise be returned in full: a plot is
+        # ~100 KB of markup that most clients cannot render inline and that
+        # costs a large chunk of an agent's context to receive. Summarise it
+        # and point at render_png, unless raw was explicitly asked for.
+        if mime == "image/svg+xml" && !get(args, "raw", false)
+            n = out.body isa Vector{UInt8} ? length(out.body) : sizeof(string(out.body))
+            _ok((mime=mime, errored=out.errored, bytes=n,
+                 body="<SVG withheld: $n bytes>",
+                 hint="Call render_png for a viewable image, or get_output with raw=true for the markup."))
+        elseif startswith(mime, "image/") && out.body isa Vector{UInt8}
+            ImageContent(data=out.body, mime_type=mime)
+        elseif out.body isa Vector{UInt8}
+            _ok((mime=mime, errored=out.errored,
+                 warning="cell returned $(length(out.body)) raw bytes labelled \"$(out.mime)\", " *
+                         "which is not a renderable type and not text. The mime was most likely " *
+                         "missing from the notebook state. Re-run the cell, or reconnect if this persists.",
+                 body=String(copy(out.body))))
         else
-            body_text = out.body isa Vector{UInt8} ? "<$(length(out.body)) bytes, mime=$(out.mime)>" : string(out.body)
-            _ok((mime=out.mime, errored=out.errored, body=body_text))
+            _ok((mime=mime, errored=out.errored, body=string(out.body)))
         end
     end),
     return_type=Content,
@@ -195,7 +268,7 @@ pluto_list_dependencies = MCPTool(
         ToolParameter(name="cell_id", type="string", description="Target cell UUID", required=true),
         ToolParameter(name="session", type="string", description="Which connect session to use", required=false, default="default"),
     ],
-    handler=(args -> @safely _ok(list_dependencies(_conn(args["session"]), args["cell_id"]))),
+    handler=(args -> @safely _ok(list_dependencies(_conn(args["session"]), _cell(args["session"], args["cell_id"])))),
     return_type=TextContent,
 )
 
@@ -220,7 +293,7 @@ pluto_render_png = MCPTool(
     handler=(args -> @safely begin
         tmp_path = tempname() * ".png"
         try
-            save_png(_conn(args["session"]), args["cell_id"], tmp_path)
+            save_png(_conn(args["session"]), _cell(args["session"], args["cell_id"]), tmp_path)
             ImageContent(data=read(tmp_path), mime_type="image/png")
         finally
             isfile(tmp_path) && rm(tmp_path)
