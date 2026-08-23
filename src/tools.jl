@@ -119,17 +119,33 @@ The first cell is always a `<style>` widening the page: Pluto's fixed-width colu
         filename !== nothing && (draft.path = Pluto.numbered_until_new(
             joinpath(Pluto.new_notebooks_directory(), String(filename)); suffix=".jl"))
         Pluto.save_notebook(draft)
-        nb = Pluto.SessionActions.open(s.session, draft.path; run_async=true)
+        # Same Task-based wait as run_with_deadline (#8): SessionActions.open's
+        # own run_async=true wraps the run in @async internally and hands back
+        # nothing to wait on, so busy/queued flags are the only signal left --
+        # exactly the heuristic that turned out to be unreliable for a cell
+        # that fails to parse. Doing the @async ourselves, with a notebook_id
+        # we chose, lets us fetch the real notebook (open registers it into
+        # session.notebooks synchronously, well before any cell runs) AND get
+        # istaskdone as the literal completion signal.
+        notebook_id = uuid4()
+        task = @async Pluto.SessionActions.open(s.session, draft.path; run_async=false, notebook_id)
+        t0 = time()
+        nb = nothing
+        while nb === nothing && !istaskdone(task)
+            nb = get(s.session.notebooks, notebook_id, nothing)
+            nb === nothing && sleep(0.01)
+        end
+        # Not registered and the task is already done: opening itself failed
+        # (e.g. a load error) -- fetch to re-raise that, not silently proceed.
+        nb === nothing && fetch(task)
         s.current[] = nb.notebook_id
         for c in nb.cells
             _mark_seen!(name, c.cell_id, c.code)
         end
-        t0 = time()
-        while any(c -> c.running || c.queued, nb.cells) && time() - t0 < _block(args)
+        while !istaskdone(task) && time() - t0 < _block(args)
             sleep(0.02)
         end
-        finished = !any(c -> c.running || c.queued, nb.cells)
-        _ok((url=notebook_url(s, nb), path=nb.path, finished=finished,
+        _ok((url=notebook_url(s, nb), path=nb.path, finished=istaskdone(task),
              cells=cells_info(nb)))
     end),
     return_type=TextContent,

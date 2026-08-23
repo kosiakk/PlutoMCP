@@ -142,6 +142,23 @@ end
     @test call("output", Dict("session" => S, "cell_id" => "prod")).body == "42"
 end
 
+@testset "create: finished reflects a parse-error cell accurately" begin
+    # Same regression class as #8's run_with_deadline fix, but on create's own
+    # (previously separate, previously heuristic) wait loop: a cell that fails
+    # to parse never reaches running/queued, so a busy-flag check alone could
+    # under- or over-report completion. A throwaway session, since create
+    # would otherwise replace S's current notebook out from under later tests.
+    T = "create-parse-error-test"
+    call("start", Dict("session" => T))
+    r = call("create", Dict("session" => T, "block" => 60,
+        "cells" => ["broken_on_create = ("]))
+    @test r.finished
+    id = only(c for c in r.cells if occursin("broken", c.code)).cell_id
+    out = call("output", Dict("session" => T, "cell_id" => id))
+    @test out.kind == "parse_error"
+    call("stop", Dict("session" => T))
+end
+
 @testset "reactivity" begin
     # Editing one cell must re-run what depends on it.
     r = call("edit", Dict("session" => S, "cell_id" => "a",
