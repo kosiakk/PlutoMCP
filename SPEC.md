@@ -110,13 +110,9 @@ Prefer `@info` with key-value pairs over `println`: structured entries survive t
 
 ## Seeing hierarchy
 
-How the agent looks at data, cheapest first:
-1. The tree sketch in the record, for structure.
-2. Throwaway statistics cells, for numbers: exact answers cost less than reading raw values.
-3. The picture, when shape is the question: `output` on the plotting cell. Vision input is billed by pixel area (~`w*h/750`), not file size — 600x400 is ~320 tokens, where the same plot as a braille canvas is ~5 KB of text and ~2000 tokens. Cheaper to see more.
-4. A text plot only when the notebook has no plotting library and the question does not justify adding one: `using UnicodePlots` writes a dependency into the notebook file that outlives the probe cell. `histogram` is the exception worth having, because it prints counts beside the bars — and `fit(Histogram, x, edges).weights` gives those counts with no package at all.
+How the agent looks at data, cheapest first: the record's sketch, for structure; throwaway statistics cells, for numbers (an exact answer costs less than the raw data it came from); the picture, when shape is the question — `output(mime="image/png")`, billed by pixel area (~`w*h/750`), so a 600x400 plot is ~320 tokens against ~2000 for the same plot as a braille canvas; and `fit(Histogram, x, edges).weights` for a distribution, which needs no plotting package at all.
 
-The picture is `output(cell, mime="image/png")`, and any other format is the same call with another MIME — `image/svg+xml` for the XML, `text/html` for a Plotly figure, `application/pdf` for the PDF — because `render` is `show(io, MIME(mime), value)` and nothing more. `path=` writes it to a file at any size, so saving a figure costs no cell. A cell that defines no name is reachable like any other: `output` addresses by cell_id.
+A plot is also the only way to catch what the record cannot say: a clipped axis label, or a curve that is not the shape the prose claims.
 
 ## Safety and transport
 
@@ -127,7 +123,7 @@ The picture is `output(cell, mime="image/png")`, and any other format is the sam
 ## Packaging and positioning
 
 - Julia package, MIT licensed, registry-eligible, client-agnostic MCP server underneath.
-- Claude Code plugin on top: auto-configured server plus two skills, `pluto-workflow` (the loop, the delete_on_success pattern, record semantics) and `pluto-seeing` (the hierarchy, with a worked histogram example serving as readability fixture). No hooks.
+- Claude Code plugin on top: auto-configured server plus ONE skill, `pluto-workflow` — the loop, the delete_on_success pattern, record semantics, and the seeing hierarchy. One skill because a live run loaded the workflow skill and never the second one, on a task that was entirely about inspecting data it could not see: a skill nobody loads is documentation. No hooks.
 - Niche: existing Julia MCP servers are REPL-shaped scratchpads (AgentREPL, MCPRepl, Kaimon). PlutoMCP is notebook-as-reviewable-artifact. The human-review channel and reproducible file are the point, not interactive evaluation.
 
 ## Design discipline

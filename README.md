@@ -92,7 +92,7 @@ claude plugin install pluto@plutomcp
 There is nothing to instantiate by hand: the server installs its own Julia
 dependencies on first launch, which makes that first start take a few minutes.
 Restart Claude Code afterwards; `claude plugin details pluto@plutomcp` should
-list two skills and one MCP server.
+list one skill and one MCP server.
 
 Two alternatives. To have the installed plugin track a working copy, point the
 marketplace at a clone instead:
@@ -108,10 +108,10 @@ Or clone anywhere and register just the server, with no plugin:
 claude mcp add pluto -- julia --project=$HOME/Documents/PlutoMCP $HOME/Documents/PlutoMCP/bin/pluto_mcp_server.jl
 ```
 
-The plugin adds two skills — `pluto-workflow` (the loop, throwaway probe cells,
-what the record means) and `pluto-seeing` (how to look at data without wasting
-context). The MCP server itself stays standalone and client-agnostic; the
-plugin is packaging, not a dependency.
+The plugin adds one skill, `pluto-workflow`: the loop, throwaway probe cells,
+what the record means, and how to look at data you cannot see. The MCP server
+itself stays standalone and client-agnostic; the plugin is packaging, not a
+dependency.
 
 ## Tools
 

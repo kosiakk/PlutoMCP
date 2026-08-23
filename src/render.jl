@@ -392,9 +392,33 @@ const ERROR_MIMES = Set(["application/vnd.pluto.parseerror+object",
 A failed cell's message. The one thing `output` cannot fetch from the worker,
 because a cell that errored produced no value — the error IS its result.
 """
-_error_text(c::Pluto.Cell) =
+_error_text(c::Pluto.Cell) = _explain(
     string(c.output.mime) == "application/vnd.pluto.parseerror+object" ?
-        _parse_error_text(c.output.body) : _stacktrace_text(c.output.body)
+        _parse_error_text(c.output.body) : _stacktrace_text(c.output.body))
+
+"""
+    _explain(text) -> String
+
+Say what one error MEANS, where Julia's own wording does not.
+
+Pluto's frontend keeps a list of these rewrites (`frontend/components/
+ErrorMessage.js`) because some Julia messages describe the parser's problem
+rather than the writer's. One of them matters here, and it is the constraint a
+notebook imposes that a Julia file does not: a cell holds ONE expression, and
+`syntax: extra token after end of expression` is what you get for two.
+
+Pluto's server already sends the boundaries — its UI uses them to offer a split
+— so the count is free. The remedy is the same one the UI offers, in words.
+"""
+function _explain(text::AbstractString)
+    occursin("syntax: extra token after end of expression", text) || return text
+    m = match(r"Boundaries: \[([^\]]*)\]", text)
+    n = m === nothing ? 0 : count(!isempty, strip.(split(m.captures[1], ",")))
+    string(text, "\n\nA Pluto cell holds ONE expression and this one holds ",
+           n > 1 ? "$n" : "several",
+           ". Split it into that many cells, or wrap it in `begin ... end` — or ",
+           "in `x = let ... end` if the whole thing should define one name.")
+end
 
 _parse_error_text(body) = body isa AbstractDict ?
     join([string(get(d, :message, get(d, "message", "syntax error")),

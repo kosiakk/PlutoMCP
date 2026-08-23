@@ -1,6 +1,6 @@
 ---
 name: pluto-workflow
-description: How to drive a Pluto notebook through the pluto MCP server — the edit/status loop, throwaway probe cells, and what the one result record means. Use when authoring, editing or debugging a Julia Pluto notebook via the pluto tools.
+description: How to drive a Pluto notebook through the pluto MCP server — the edit/status loop, throwaway probe cells, what the one result record means, and how to look at data you cannot see. Use when authoring, editing, debugging or inspecting a Julia Pluto notebook via the pluto tools.
 ---
 
 # Working in a Pluto notebook
@@ -15,7 +15,7 @@ control the notebook they live in.
 ## The loop
 
 ```
-open  →  edit  →  check status  →  edit  →  …  →  output(html)
+open  →  edit  →  check status  →  edit  →  …
 ```
 
 Every tool that runs or waits returns the same record:
@@ -24,31 +24,26 @@ Every tool that runs or waits returns the same record:
 status, waited_seconds, timestamp, cells
 ```
 
-`status` is one of `pending | calculating | success | error`, and it means the
-same thing on a cell as on the record:
+`status` is one of `pending | calculating | success | error`
 
-- **`success`** — go on.
-- **`error`** — read the failed cell's `error` message and rewrite the cell.
-  Nothing to roll back: an errored cell with a message *is* the validation
-  result, and Pluto's reactive engine is the validator.
 - **`calculating`** — the run is still going. Call
   `read(wait_seconds=N, since=<the record's timestamp>)` and you get the same
-  record back, narrowed to what changed. Timestamps are ISO 8601 UTC strings
-  (`"2026-08-23T18:42:23.788Z"`) — never compute one yourself; copy the one you
-  were given.
+  record back, narrowed to what changed. It's safe to request using timestamps from previously returned results.
 
-`wait_seconds` defaults to 0.1, which is enough for an ordinary cell, so the
-common case comes back complete in one call. Raise it for work you expect to be
-slow — `wait_seconds=60` for a first `using SomePackage` (Pluto installs it) or
-a long computation. Pass `0` to fire and forget, which is how you author a run
-of cells before reading any of them.
+`wait_seconds` defaults to 0.1 so the common case comes back complete in one
+call. **Do not raise it to sit through slow work.** A first `using Plots` takes
+minutes to install and compile; blocking on it buys nothing. `calculating` is
+not an error and nothing was cancelled — the cell runs on, the human's browser
+shows it running, and you are free to write the cells that come next. The
+result arrives in the next record, or in `read(since=…)` when you want it.
+Pass `0` to fire and forget, which is how you author a run of cells before
+reading any of them.
 
 ## Reactivity changes how you edit
 
-Pluto runs cells in **dependency order**, not top to bottom, and allows **one
-definition of a global per cell**.
+Pluto runs cells in **dependency order**, not top to bottom, and allows **one definition of a global per cell**.
 
-- Editing one cell re-runs everything downstream. The record lists the whole
+- Editing one cell re-runs other cells which depend on it. The record lists the whole
   cascade, including cells that re-ran cleanly — that is the interesting part.
 - Prefer `x = let ... end` over `begin ... end` for a multi-step computation:
   `let` defines exactly one name, so it creates one dependency edge instead of
@@ -95,6 +90,31 @@ Prefer `@info` with key-value pairs over `println`:
 Log entries are captured individually and the last 20 survive in the record,
 each one whole. `println` output is one blob that gets truncated in the middle,
 so a long print loop loses exactly the part you wanted.
+
+## Looking at data you cannot see
+
+Everything you learn about a value arrives as text you paid for. Cheapest
+first, and stop as soon as the question is answered.
+
+1. **The sketch you already have.** `Vector{Float64}, ≥30 elements: [0.12, …]`
+   answers what shape, what type, what magnitude, for free. `≥` means Pluto
+   truncated.
+2. **Statistics, not values.** An exact answer costs less than the data it came
+   from: `extrema`, `quantile`, `count(isnan, x)`, `describe(df)`,
+   `combine(groupby(df, :region), nrow)`. Never dump an array to find its
+   maximum.
+3. **The picture, when shape is the question.** `output(cell=…,
+   mime="image/png")`. Vision is billed by pixel area (~`w*h/750`): a 600×400
+   plot is ~320 tokens, where the same plot as a braille canvas is ~2000. A
+   picture is cheaper than a text plot, and it is the only way to catch a
+   clipped label or a curve that is not the shape you claimed in your prose.
+4. **Counts, for a distribution.** `fit(Histogram, x, edges).weights` needs no
+   plotting package, and the counts are where the finding is: a trough between
+   two humps is a second population, not a tail — a tail decays monotonically.
+
+Do not print an array to inspect it, do not ask for a plot when a number
+answers the question, and do not install a plotting package to look at a shape:
+the dependency outlives the probe cell, in somebody else's notebook file.
 
 ## Reading the record
 

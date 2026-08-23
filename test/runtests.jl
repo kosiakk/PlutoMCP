@@ -522,6 +522,21 @@ end
                       "mode" => "delete", "wait_seconds" => 60))
 end
 
+@testset "a cell with two expressions says what to do about it" begin
+    # Pluto's frontend rewrites this one message into advice (split, or wrap in
+    # begin/end) because Julia's wording describes the parser's problem, not
+    # the writer's. The boundaries come free in the error; the remedy is the
+    # same one the UI offers.
+    r = call("edit", Dict("mode" => "insert", "wait_seconds" => 60,
+                          "code" => "two = 1\nexpressions = 2"))
+    c = only(r.cells)
+    @test c.status == "error"
+    @test occursin("ONE expression", c.error)
+    @test occursin("begin ... end", c.error)
+    call("edit", Dict("cell" => String(c.cell_id), "mode" => "delete",
+                      "wait_seconds" => 60))
+end
+
 @testset "errors are reported as messages, not blobs" begin
     r = call("edit", Dict("mode" => "insert",
                           "code" => "broken = (", "wait_seconds" => 60))
