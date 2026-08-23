@@ -589,11 +589,24 @@ end
 Serve over stdio, MCP's default transport. Blocks forever reading stdin: this is
 the entry point for a client that launches the server as a subprocess.
 
-Redirects stdout to stderr first: anything Pluto (or a notebook it runs)
-prints to stdout would otherwise land in the middle of the JSON-RPC stream and
-corrupt it. stderr is unaffected and still reaches the client's logs.
+Does NOT redirect stdout, despite #9's original diagnosis. Tried that first
+(redirect_stdout(stderr) here) and it broke the server completely: this
+package's own MCP transport (ModelContextProtocol.jl's run_server_loop) sends
+every response via the bare `println(response); flush(stdout)` -- no stream
+argument, just the `stdout` global -- so redirecting stdout doesn't shield
+JSON-RPC from stray prints, it silently redirects the JSON-RPC responses
+themselves. A caught-just-in-time bug from a real stdio smoke test, not
+something the unit tests (which call handlers directly, bypassing the
+transport entirely) could have exposed.
+
+The actual risk #9 was worried about turned out to be narrow: Pluto's own
+startup banners go through `@info`, which already targets stderr by default.
+The one real offender is `println("Updating registry done ✓")` in
+webserver/WebServer.jl, fired from a background task IF the Pkg registry is
+stale when a session starts -- rare, and harmless right after this package's
+own `Pkg.instantiate()` freshens the registry. Left unaddressed rather than
+reintroducing a global redirect to fix a narrow, low-probability race.
 """
 function run_server()
-    redirect_stdout(stderr)
     start!(build_server())
 end

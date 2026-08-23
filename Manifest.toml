@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "9999910dcf030291e8c487979813d2972138c01a"
+project_hash = "7b3f84b898277b2ca3eea67b613c966fe173667b"
 
 [[deps.ArgTools]]
 uuid = "0dad84c5-d112-42e6-8d28-ef12dabb789f"
@@ -142,6 +142,18 @@ git-tree-sha1 = "7204148362dafe5fe6a273f855b8ccbe4df8173e"
 uuid = "692b3bcd-3c85-4b1f-b108-f13ce0eb3210"
 version = "1.8.0"
 
+[[deps.JSON]]
+deps = ["Dates", "Logging", "Parsers", "PrecompileTools", "StructUtils", "UUIDs", "Unicode"]
+git-tree-sha1 = "c7345ab1a7ca4dc8a02c9f6510da0d9857bbe513"
+uuid = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+version = "1.7.1"
+
+    [deps.JSON.extensions]
+    JSONArrowExt = ["ArrowTypes"]
+
+    [deps.JSON.weakdeps]
+    ArrowTypes = "31f734f8-188a-4ce0-8406-c8a06bd891cd"
+
 [[deps.JSON3]]
 deps = ["Dates", "Mmap", "Parsers", "PrecompileTools", "StructTypes", "UUIDs"]
 git-tree-sha1 = "411eccfe8aba0814ffa0fdf4860913ed09c34975"
@@ -153,6 +165,12 @@ version = "1.14.3"
 
     [deps.JSON3.weakdeps]
     ArrowTypes = "31f734f8-188a-4ce0-8406-c8a06bd891cd"
+
+[[deps.JWTs]]
+deps = ["Downloads", "JSON", "OpenSSL_jll", "SHA"]
+git-tree-sha1 = "4c08f5525d1c33736880b50cd8f9880dda6c51df"
+uuid = "d850fbd6-035d-5a70-a269-1ca2e636ac6c"
+version = "1.1.0"
 
 [[deps.JuliaSyntaxHighlighting]]
 deps = ["StyledStrings"]
@@ -250,10 +268,10 @@ uuid = "a63ad114-7e13-5084-954f-fe012c677804"
 version = "1.11.0"
 
 [[deps.ModelContextProtocol]]
-deps = ["Base64", "DataStructures", "Dates", "JSON3", "Logging", "MacroTools", "OrderedCollections", "StructTypes", "URIs"]
-git-tree-sha1 = "cce5dad0a566e60159e201eba27d433c6535506f"
+deps = ["Base64", "DataStructures", "Dates", "HTTP", "JSON3", "JWTs", "Logging", "MacroTools", "OrderedCollections", "PrecompileTools", "Random", "SHA", "Sockets", "StructTypes", "URIs", "UUIDs"]
+git-tree-sha1 = "c937bad2dcbaeaca320f0e18810c4222c4dbbc35"
 uuid = "c58f755f-f2a7-4f48-bf29-4e9659b78499"
-version = "0.2.1"
+version = "0.7.0"
 
 [[deps.MozillaCACerts_jll]]
 uuid = "14a3606d-f60d-562e-9121-12d972cd8159"
@@ -316,7 +334,7 @@ version = "1.2.2"
 deps = ["JSON3", "ModelContextProtocol", "Pluto", "Sockets", "UUIDs"]
 path = "."
 uuid = "335e2ae6-fbe9-4aef-8d3f-16b8e403ee9e"
-version = "0.2.0"
+version = "0.3.0"
 
 [[deps.PrecompileSignatures]]
 git-tree-sha1 = "18ef344185f25ee9d51d80e179f8dad33dc48eb1"
@@ -390,6 +408,22 @@ deps = ["Dates", "UUIDs"]
 git-tree-sha1 = "159331b30e94d7b11379037feeb9b690950cace8"
 uuid = "856f2bd8-1eba-4b0a-8007-ebc267875bd4"
 version = "1.11.0"
+
+[[deps.StructUtils]]
+deps = ["Dates", "UUIDs"]
+git-tree-sha1 = "2d0fc55c61321ba245c47be599570d11bac50303"
+uuid = "ec057cc2-7a8d-4b58-b3b3-92acb9f63b42"
+version = "2.8.5"
+
+    [deps.StructUtils.extensions]
+    StructUtilsMeasurementsExt = ["Measurements"]
+    StructUtilsStaticArraysCoreExt = ["StaticArraysCore"]
+    StructUtilsTablesExt = ["Tables"]
+
+    [deps.StructUtils.weakdeps]
+    Measurements = "eff96d63-e80a-5855-80a2-b1b0885c5ab7"
+    StaticArraysCore = "1e83bf80-4336-4d27-bf5d-d5a4f845583c"
+    Tables = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
 
 [[deps.StyledStrings]]
 uuid = "f489334b-da3d-4c2e-b8f0-e476e12c162b"
