@@ -11,6 +11,15 @@ A human is watching it in a browser, and what they see at the end is what you le
 You are the only programmatic writer.
 Cells are pure computation: they never control the notebook they live in.
 
+## Give them the link, early
+
+`open` returns a URL.
+Write the first cell — a title and a sentence on what you are about to do — and then hand the URL over, as a clickable link or button if your tools have one.
+Do not wait until the end: the notebook is the thing they are watching, and everything you write from that point on appears in front of them, cell by cell.
+
+A person watching from the second cell can stop you at the third.
+A person shown the link at the end can only review.
+
 ## The loop
 
 ```

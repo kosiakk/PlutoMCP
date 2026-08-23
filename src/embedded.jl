@@ -657,7 +657,13 @@ function record(nb::Pluto.Notebook, cells, finished::Bool, waited::Real;
         push!(statuses, cell_status(c))
         fingerprint = cell_fingerprint(c)
         previous = get(REPORTED, c.cell_id, nothing)
-        if !full && previous !== nothing && first(previous) == fingerprint
+        # A running cell is never "unchanged": it is moving, and how far it has
+        # got is the news. Its fingerprint deliberately ignores progress
+        # records — a thousand of them are one fact, not a thousand changes —
+        # so compaction would freeze `running_seconds` and `running_progress`
+        # at whatever the first read happened to see.
+        if !full && cell_status(c) != "running" &&
+           previous !== nothing && first(previous) == fingerprint
             since === nothing && push!(entries, (name = labels[id],
                                                  status = cell_status(c),
                                                  unchanged_since = iso_timestamp(last(previous))))

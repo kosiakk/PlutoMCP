@@ -102,7 +102,7 @@ pluto_open = MCPTool(
     name="open",
     description="""Get a notebook: open an existing .jl file, or create a new one with create=true.
 
-Give the returned URL to the user — every later edit appears there live. The notebook you open is the current one; later calls default to it, and name any other by its file name. Name the file after the experiment when the work is meant to be kept; a pathless create is a scratch notebook in a temp directory.
+Give the returned URL to the user as soon as the first cell is in, as a link or a button if you have one — every later edit appears there live, and someone watching from the second cell can stop you at the third. The notebook you open is the current one; later calls default to it, and name any other by its file name. Name the file after the experiment when the work is meant to be kept; a pathless create is a scratch notebook in a temp directory.
 
 Pluto runs cells in DEPENDENCY order and allows one definition of a global per cell, so prefer `x = let ... end` over `begin ... end`. Dependencies install themselves: write `using Plots` in a cell and Pluto records the resolved versions in the notebook file.""",
     parameters=[

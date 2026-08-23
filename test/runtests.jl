@@ -576,14 +576,27 @@ end
     call("edit", Dict("code" => "using ProgressLogging", "wait_seconds" => 300))
     call("edit", Dict("code" => "vocab_slow = let\n  t = 0.0\n  @progress for i in 1:60\n" *
                                 "    sleep(0.1); t += i\n  end\n  t\nend", "wait_seconds" => 0))
-    sleep(2)
-    mid = only(c for c in call("read", Dict("wait_seconds" => 0)).cells
-               if get(c, :name, "") == "vocab_slow")
-    @test mid.status == "running"
-    @test mid.running_seconds > 0
-    @test 0 < mid.running_progress < 1           # from @progress, not a log line
-    @test !haskey(mid, :output)                  # no stale result while it runs
-    @test !any(l -> occursin("Progress", get(l, :level, "")), get(mid, :logs, ()))
+    # Pluto delivers log records on a throttled schedule, so the first
+    # @progress message lands somewhere in the first second or two: poll for it
+    # rather than sampling once and hoping.
+    seen_running, secs, prog = false, nothing, nothing
+    for _ in 1:40
+        hits = [c for c in call("read", Dict("wait_seconds" => 0)).cells
+                if get(c, :name, "") == "vocab_slow"]
+        mid = isempty(hits) ? nothing : first(hits)
+        if mid !== nothing && get(mid, :status, "") == "running"
+            seen_running = true
+            let v = get(mid, :running_seconds, nothing); v === nothing || (secs = v) end
+            let v = get(mid, :running_progress, nothing); v === nothing || (prog = v) end
+            @test !haskey(mid, :output)          # no stale result while it runs
+            @test !any(l -> occursin("Progress", get(l, :level, "")), get(mid, :logs, ()))
+        end
+        prog === nothing || break
+        sleep(0.25)
+    end
+    @test seen_running
+    @test secs !== nothing && secs > 0
+    @test prog !== nothing && 0 < prog < 1       # from @progress, not a log line
 
     call("read", Dict("wait_seconds" => 60))
     for n in ("vocab_slow", "vocab_bad", "vocab_ok")
