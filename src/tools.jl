@@ -433,10 +433,10 @@ pluto_read = MCPTool(
     name="read",
     description="""The notebook as it is right now: the same record every other tool returns, running nothing.
 
-The notebook object is read directly, so a human's browser edits are already in it. `wait_seconds` waits for the run to go idle or for a new error. `since` (a `timestamp` from an earlier record) drops the cells you already have instead of compacting them. Naming `cells` returns those cells whole — `code` included, even if you were sent it before. That is the way back after a compact; a bare `read` omits code you already hold. Human edits arrive with `old_code` beside the new `code` — the review channel. `dependencies=true` adds, for each cell, which cells define what it reads and which read what it defines — one hop each way.""",
+The notebook object is read directly, so a human's browser edits are already in it. `wait_seconds` waits for the run to go idle or for a new error. `since` (a `timestamp` from an earlier record) drops the cells you already have instead of compacting them. Naming `cells` returns those cells whole — `code` included, even if you were sent it before. That is the way back after a compact; a bare `read` omits code you already hold. Human edits arrive with `old_code` beside the new `code` — the review channel. `dependencies=true` adds `uses` and `used_by` to each cell — the cells it reads from, and the cells that read what it defines, one hop each way.""",
     parameters=[
         ToolParameter(name="cells", type="array", description="Cell references to report on. $CELL_REF_DOC Omit for all of them.", required=false),
-        ToolParameter(name="dependencies", type="boolean", description="Add each reported cell's upstream and downstream cells — one hop, keyed by the variable that connects them", required=false, default=false),
+        ToolParameter(name="dependencies", type="boolean", description="Add `uses` and `used_by` to each reported cell: the cells it reads from, and the cells that read what it defines, one hop each way", required=false, default=false),
         wait_param(),
         ToolParameter(name="since", type="string", description="A `timestamp` from an earlier record, e.g. \"2026-08-23T18:42:23.788Z\": omit cells this session has already been shown unchanged, rather than listing them compactly. Copy the value, never compute it.", required=false),
         NOTEBOOK_PARAM,
@@ -505,20 +505,19 @@ end
 """
 One cell's neighbours in Pluto's reactivity graph, by cell name.
 
-One hop each way, not a tree: `upstream` is the cells that define what this
-one reads, `downstream` the cells that read what it defines, each keyed by the
-variable that connects them. Transitive closure is the caller's to walk if it
-wants one — and rarely what "what breaks if I change this" needs.
+One hop each way: `uses` is the cells this one reads from, `used_by` the cells
+that read what it defines. Flat lists of names, and a name is a cell reference
+— every entry can go straight back as `cell=`.
 
-No `references`. Pluto's own list is every global the cell reads, `+` and
-`sqrt` included, and once the ones nobody asked about are gone what remains is
-`keys(upstream)` spelled a second way.
+Not a tree and not transitive: the closure is the caller's to walk, and rarely
+what "what breaks if I change this" needs. Not a map either. Keying by the
+variable in between put the variable's name beside the name of the cell that
+declares it, which in Pluto is usually the same word twice.
 """
 function _dependencies_of(nb, c::Pluto.Cell, labels)
-    bylabel(m) = Dict(string(sym) => unique!([labels[string(cc.cell_id)] for cc in cs])
-                      for (sym, cs) in m if !isempty(cs))
-    (upstream = bylabel(Pluto.upstream_cells_map(c, nb.topology)),
-     downstream = bylabel(Pluto.downstream_cells_map(c, nb.topology)))
+    names(m) = sort!(unique!([labels[string(cc.cell_id)] for cs in values(m) for cc in cs]))
+    (uses = names(Pluto.upstream_cells_map(c, nb.topology)),
+     used_by = names(Pluto.downstream_cells_map(c, nb.topology)))
 end
 
 """

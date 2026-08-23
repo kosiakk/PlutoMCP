@@ -233,7 +233,7 @@ end
     # speak; every one of them now has exactly one replacement.
     banned = ["block", "new_source", "source", "cell_id", "waited_s", "full",
               "edit_mode", "ephemeral", "finished", "errored", "session", "cell_type",
-              "mode", "after", "run", "tree"]
+              "mode", "after", "run", "tree", "upstream", "downstream"]
     for tool in P.ALL_TOOLS, p in tool.parameters
         @test !(p.name in banned)
     end
@@ -737,15 +737,13 @@ end
 
     t = call("read", Dict("cells" => ["total"], "dependencies" => true))
     c = only(t.cells)
-    @test "a" in c.upstream["a"]
-    # One hop, keyed by the variable that connects the cells — and no
-    # `references`: Pluto's list counts `*` as one, and the rest of it is
-    # `keys(upstream)` said twice.
-    @test !haskey(c, :references)
-    @test Set(string.(keys(c.upstream))) == Set(["a", "b"])
+    # Flat lists of cell names, one hop each way. Every entry is a reference
+    # you can send straight back as `cell=`.
+    @test Set(c.uses) == Set(["a", "b"])
+    @test !haskey(c, :references) && !haskey(c, :upstream)
 
     a = only(call("read", Dict("cells" => ["a"], "dependencies" => true)).cells)
-    @test "total" in a.downstream["a"]
+    @test "total" in a.used_by
 end
 
 @testset "cells this session already saw compress, and since drops them" begin

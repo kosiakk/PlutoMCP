@@ -200,8 +200,9 @@ block, a plot — works the same way: `output` addresses by `cell_id`.
 
 ## Also in the record
 
-- `read(dependencies=true)` gives each cell's `upstream` and `downstream`
-  cells — one hop, keyed by the variable that connects them: what breaks if
+- `read(dependencies=true)` gives each cell's `uses` and `used_by` — the
+  cells it reads from and the cells that read it, one hop each way. Every name
+  in them is a reference you can send back as `cell=`. That is what breaks if
   this changes.
 - `read(since=<timestamp>)` reports what a **human** edited in the browser,
   with `old_code` beside the current `code`. That is the review channel; your

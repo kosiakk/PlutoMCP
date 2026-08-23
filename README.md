@@ -133,7 +133,7 @@ bytes, and human-edit history.
 | `stop` | stop the session, one notebook, or one running cell |
 
 Probing a value and reading a docstring are cells (`edit` with
-`delete_on_success=true`); dependencies are `read(dependencies=true)`; waiting is
+`delete_on_success=true`); dependencies are `read(dependencies=true)` — `uses` and `used_by`; waiting is
 `read(wait_seconds=N)`. A picture is `output(mime="image/png")` on the plotting
 cell: Pluto stores SVG, which no client can show, so the value is asked for a
 PNG instead — and for the same reason `output(mime="image/svg+xml")` hands back
