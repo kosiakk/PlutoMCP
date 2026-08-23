@@ -592,11 +592,20 @@ end
     call("edit", Dict("session" => S, "mode" => "insert",
         "code" => "noisy = begin; for i in 1:100; @info \"step\" i=i; end; println(\"done\"); 7; end",
         "wait_seconds" => 60))
-    c = only(call("read", Dict("session" => S, "cells" => ["noisy"])).cells)
+    # Pluto delivers a cell's log entries on its own throttled schedule, AFTER
+    # the cell itself reports success -- so a read taken the instant a run
+    # finishes can legitimately be missing the last few. Wait for the print,
+    # which this cell emits last of all; then the window is deterministic.
+    local c
+    for _ in 1:150
+        c = only(call("read", Dict("session" => S, "cells" => ["noisy"])).cells)
+        any(l -> l.level == "Stdout", get(c, :logs, ())) && break
+        sleep(0.1)
+    end
     @test c.output == "7"
     @test length(c.logs) == P.LOGS_KEPT           # the LAST 20, not the first
     @test c.logs[1].level == "Info"
-    @test c.logs[1].kwargs["i"] == "82"
+    @test c.logs[1].kwargs["i"] == "82"           # 100 @info + 1 println, last 20
     # println is captured too, at Pluto's private level -- reported as Stdout
     # rather than as the meaningless "LogLevel(-555)".
     @test any(l -> l.level == "Stdout" && occursin("done", l.msg), c.logs)
