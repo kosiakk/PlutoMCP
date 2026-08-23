@@ -293,12 +293,19 @@ end
     # the server that produced it.
     call("start")
     call("open", Dict("create" => true, "wait_seconds" => 90))
+    # A cell of its own: state is keyed by cell, so an empty notebook has none.
+    call("edit", Dict("mode" => "insert", "code" => "p = 1", "wait_seconds" => 60))
     other = P.notebook_source(["q = 2"])
     other.path = tempname() * ".jl"
     Pluto.save_notebook(other)
     call("open", Dict("path" => other.path, "wait_seconds" => 90))
-    @test length(P.CHANGES) == 2
-    @test length(P.SNAPSHOTS) == 2
+    # State is keyed by cell_id, which is a UUID and needs no notebook above
+    # it: both notebooks' cells live in the same flat maps, each entry naming
+    # the notebook it belongs to. (CHANGES is not checked here — an edit made
+    # through these tools marks itself seen, so it logs nothing; that log is
+    # for what a HUMAN did, and is tested where a browser edit is simulated.)
+    @test length(unique(first(v) for v in values(P.SNAPSHOTS))) == 2
+    @test !isempty(P.REPORTED)
 
     spill = P.spill_dir(P._notebook())
     mkpath(spill); write(joinpath(spill, "leftover.txt"), "x")
@@ -384,6 +391,28 @@ const MAIN = Ref{String}("")
 
     # replace/delete without a cell is a refusal, not a crash.
     @test call("edit", Dict("code" => "x = 1")).error
+end
+
+@testset "a cell that becomes prose folds too" begin
+    # Prose written by REPLACING a cell is prose all the same. Found by a live
+    # run: its title cell was the one unfolded md in the notebook, because it
+    # was written over an existing code cell.
+    r = call("edit", Dict("mode" => "insert", "code" => "placeholder = 1",
+                          "wait_seconds" => 60))
+    id = only(r.cells).cell_id
+    @test !P.resolve_cell(P._notebook(), String(id)).code_folded
+
+    call("edit", Dict("cell" => String(id), "code" => "md\"# A heading\"",
+                      "wait_seconds" => 60))
+    @test P.resolve_cell(P._notebook(), String(id)).code_folded
+
+    # ...but editing prose that is ALREADY prose leaves the fold alone: a human
+    # may have unfolded it deliberately to read along.
+    P.resolve_cell(P._notebook(), String(id)).code_folded = false
+    call("edit", Dict("cell" => String(id), "code" => "md\"# Another heading\"",
+                      "wait_seconds" => 60))
+    @test !P.resolve_cell(P._notebook(), String(id)).code_folded
+
 end
 
 @testset "cells reports the whole cascade, not just the target" begin
@@ -663,8 +692,9 @@ end
     @test isempty(call("read", Dict("since" => P.parse_timestamp(t))).cells)
 
     dedup_nb = P._notebook()
+    dedup_cells = copy(dedup_nb.cells)
     call("stop", Dict("notebook" => basename(dedup_nb.path)))
-    @test !haskey(P.REPORTED, dedup_nb.notebook_id)
+    @test !any(c -> haskey(P.REPORTED, c.cell_id), dedup_cells)
     call("open", Dict("path" => MAIN[], "wait_seconds" => 60))   # back to the main notebook
 end
 

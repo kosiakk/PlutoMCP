@@ -126,7 +126,7 @@ bytes, and human-edit history.
 | `edit` | insert / replace / delete a cell, save, and run it |
 | `run` | recompute cells whose non-reactive inputs changed (a file, an RNG) — the backup path; `edit` already saves and runs |
 | `read` | cells as they are now: snapshot, dependency tree, wait, changes-since |
-| `output` | one cell's value — or the whole notebook — as any MIME it renders: a picture, the full text, the self-contained HTML |
+| `output` | one cell's value — or the whole notebook — as any MIME it renders: a picture, the full text, the HTML export |
 | `bond` | set an `@bind`-ed variable's value, like moving its widget |
 | `stop` | stop the session, one notebook, or one running cell |
 
@@ -226,7 +226,7 @@ PlutoMCP is a different niche. The unit of work is a **notebook**, not an
 expression: reactive, reproducible from scratch, self-contained with its own
 package environment, and reviewable by a human while it is being written. The
 human-review channel and the file that reruns from nothing are the point, not
-interactive evaluation — and `export` seals the result as one self-contained
-HTML file, committed beside the `.jl` as the provenance record. If you want a
+interactive evaluation — and `output(mime="text/html")` seals the result as
+one HTML file, committed beside the `.jl` as the provenance record. If you want a
 scratchpad, use a REPL server. If you want the finished experiment to still
 make sense next month, use this.

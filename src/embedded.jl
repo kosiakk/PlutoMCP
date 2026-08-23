@@ -26,20 +26,22 @@ attached.
 # the only session there can be is a parameter on every tool that never varies.
 const SERVER = Ref{Any}(nothing)
 
-# notebook_id => log of cell-level edits seen via
-# StateChangeEvent, oldest first. A DROPPING buffer: a notification path must
-# never be able to block the thing it observes. Keyed per notebook: several can be
-# open at once, and a shared log would read every OTHER notebook's cells as
-# freshly deleted the moment any one of them fired an event, since they are
-# absent from that event's `nb.cells`.
-const CHANGES = Dict{Base.UUID,Vector{NamedTuple}}()
+# Cell-level edits seen via StateChangeEvent, oldest first. A DROPPING buffer:
+# a notification path must never be able to block the thing it observes.
+#
+# One log, not one per notebook: an entry names the notebook it happened in,
+# which is a property of the event rather than a key to file it under.
+const CHANGES = NamedTuple[]
 const CHANGES_MAX = 256
 
-# notebook_id => cell_id => code, as of the last
-# StateChangeEvent. Lets the event hook tell an edit apart from a mere state
-# transition (queued/running), and reconstructs the pair `read` reports as
-# `old_code` and `code`.
-const SNAPSHOTS = Dict{Base.UUID,Dict{Base.UUID,String}}()
+# cell_id => (notebook_id, code) as of the last StateChangeEvent. Lets the
+# event hook tell an edit apart from a mere state transition (queued/running),
+# and reconstructs the pair `read` reports as `old_code` and `code`.
+#
+# Keyed by cell_id alone: a cell_id is a UUID and identifies a cell anywhere.
+# The notebook_id rides along as a VALUE, because a deleted cell is gone from
+# `nb.cells` and its notebook has to be recoverable from somewhere.
+const SNAPSHOTS = Dict{Base.UUID,Tuple{Base.UUID,String}}()
 
 """
     _mark_seen!(notebook_id, cell_id, code)
@@ -50,14 +52,13 @@ change. The change log exists to tell the agent what a HUMAN did while it was
 not looking; an edit the agent just made through these tools is not that.
 """
 function _mark_seen!(notebook_id::Base.UUID, cell_id, code::AbstractString)
-    snap = get!(SNAPSHOTS, notebook_id, Dict{Base.UUID,String}())
-    snap[cell_id] = code
+    SNAPSHOTS[cell_id] = (notebook_id, String(code))
     return nothing
 end
 
 "Drop a cell from the snapshot, so its removal is not reported as a deletion."
-function _forget_seen!(notebook_id::Base.UUID, cell_id)
-    haskey(SNAPSHOTS, notebook_id) && delete!(SNAPSHOTS[notebook_id], cell_id)
+function _forget_seen!(cell_id)
+    delete!(SNAPSHOTS, cell_id)
     return nothing
 end
 
@@ -82,24 +83,30 @@ now, and a stale copy must never be able to override it.
 """
 function _note_change!(nb::Pluto.Notebook)
     t = time()
-    snap = get!(SNAPSHOTS, nb.notebook_id, Dict{Base.UUID,String}())
-    log = get!(CHANGES, nb.notebook_id, NamedTuple[])
+    id = nb.notebook_id
     seen = Set{Base.UUID}()
     for c in nb.cells
         push!(seen, c.cell_id)
-        old = get(snap, c.cell_id, nothing)
+        old = get(SNAPSHOTS, c.cell_id, nothing)
         if old === nothing
-            push!(log, (at=t, cell_id=string(c.cell_id), change="inserted", old_code=""))
-        elseif old != c.code
-            push!(log, (at=t, cell_id=string(c.cell_id), change="edited", old_code=old))
+            push!(CHANGES, (at=t, notebook_id=id, cell_id=string(c.cell_id),
+                            change="inserted", old_code=""))
+        elseif last(old) != c.code
+            push!(CHANGES, (at=t, notebook_id=id, cell_id=string(c.cell_id),
+                            change="edited", old_code=last(old)))
         end
-        snap[c.cell_id] = c.code
+        SNAPSHOTS[c.cell_id] = (id, c.code)
     end
-    for id in setdiff(keys(snap), seen)
-        push!(log, (at=t, cell_id=string(id), change="deleted", old_code=snap[id]))
-        delete!(snap, id)
+    # Gone from THIS notebook: a snapshot entry filed under it that no longer
+    # appears among its cells. Another notebook's cells are untouched, which is
+    # what the notebook_id in the value is for.
+    for (cid, (nid, code)) in collect(SNAPSHOTS)
+        nid == id && !(cid in seen) || continue
+        push!(CHANGES, (at=t, notebook_id=id, cell_id=string(cid),
+                        change="deleted", old_code=code))
+        delete!(SNAPSHOTS, cid)
     end
-    length(log) > CHANGES_MAX && deleteat!(log, 1:(length(log) - CHANGES_MAX))
+    length(CHANGES) > CHANGES_MAX && deleteat!(CHANGES, 1:(length(CHANGES) - CHANGES_MAX))
     return nothing
 end
 
@@ -166,7 +173,8 @@ function stop_session()
     end
     close(s.server)
     SERVER[] = nothing
-    empty!(CHANGES); empty!(SNAPSHOTS); empty!(REPORTED); empty!(CODE_SENT)
+    # CODE_SENT survives: stopping a server does not empty the agent's context.
+    empty!(CHANGES); empty!(SNAPSHOTS); empty!(REPORTED)
     return nothing
 end
 
@@ -343,8 +351,9 @@ function cell_info(nb::Pluto.Notebook, c::Pluto.Cell, labels=cell_labels(nb);
 end
 
 #=
-notebook_id => cell_id => (fingerprint, reported_at) for the last version of
-that cell the client was told about.
+cell_id => (fingerprint, reported_at) for the last version of that cell the
+client was told about. A cell_id is a UUID, so it needs no notebook to file it
+under.
 
 The reference point is the agent's context, not the notebook's history, and
 that is why the map is written only while building a record -- never from a
@@ -352,43 +361,44 @@ StateChangeEvent. A cell that changed and changed back between two records was
 never reported in between, so there is nothing for the agent to re-read: ABA is
 the right answer here, not a bug to defend against.
 =#
-const REPORTED = Dict{Base.UUID,Dict{Base.UUID,Tuple{UInt64,Float64}}}()
+const REPORTED = Dict{Base.UUID,Tuple{UInt64,Float64}}()
 
 #=
-notebook_id => cell_id => hash of the cell's code, for code the client
-already holds -- because a record delivered it, or because an `edit`
-supplied it in the first place.
+Hashes of every piece of cell text this client has been sent -- by a record
+that carried it, or by the `edit` that supplied it in the first place.
+
+One flat set, not a map per notebook, because the thing it models is the
+CLIENT'S CONTEXT, and that context does not reset when a notebook does. Reopen
+a file this agent wrote and Pluto hands back a fresh notebook_id; a
+per-notebook ledger would forget everything and read the whole file back to the
+agent that wrote it minutes earlier.
 
 Kept apart from REPORTED because it answers a different question. REPORTED asks
 "is this whole entry the one I last sent?", which a re-run to a new output makes
 false; the code is unchanged all the same, and an execution cascade never
-rewrites code. So a cascade over a large notebook stops repeating source the
-agent is already holding, and an `edit` never reads its own text back to it.
+rewrites code.
 
 Recovery is `read(cells=[...])`. The agent's context is the reference point,
-and after a compact it no longer holds what this map claims -- so naming cells
+and after a compact it no longer holds what this set claims -- so naming cells
 means send them whole, ledger or no ledger. An agent that still holds a cell
 has no reason to name it.
 =#
-const CODE_SENT = Dict{Base.UUID,Dict{Base.UUID,UInt64}}()
+const CODE_SENT = Set{UInt64}()
 
 """
-    _mark_code_sent!(notebook_id, cell_id, code)
+    _mark_code_sent!(code)
 
-Record `code` as text this session holds. `edit` calls it with the code it was
+Record `code` as text the client holds. `edit` calls it with the code it was
 handed: the caller wrote that text, so reading it back is the one field of the
 record they already have.
 """
-function _mark_code_sent!(notebook_id::Base.UUID, cell_id, code::AbstractString)
-    sent = get!(CODE_SENT, notebook_id, Dict{Base.UUID,UInt64}())
-    sent[cell_id] = hash(code)
-    return nothing
-end
+_mark_code_sent!(code::AbstractString) = (push!(CODE_SENT, hash(code)); nothing)
 
 "Drop a cell from the reported map, so a deleted cell stops costing memory."
-function _forget_reported!(notebook_id::Base.UUID, cell_id)
-    haskey(REPORTED, notebook_id) && delete!(REPORTED[notebook_id], cell_id)
-    haskey(CODE_SENT, notebook_id) && delete!(CODE_SENT[notebook_id], cell_id)
+function _forget_reported!(cell_id)
+    delete!(REPORTED, cell_id)
+    # CODE_SENT is deliberately untouched: deleting a cell does not un-send its
+    # text to the agent that is still holding it.
     return nothing
 end
 
@@ -457,16 +467,10 @@ function record(nb::Pluto.Notebook, cells, finished::Bool, waited::Real;
                 changes::Dict{String,<:NamedTuple}=Dict{String,NamedTuple}(), extra...)
     timestamp = time()
     labels = cell_labels(nb)
-    seen = get!(REPORTED, nb.notebook_id, Dict{Base.UUID,Tuple{UInt64,Float64}}())
-    sent = get!(CODE_SENT, nb.notebook_id, Dict{Base.UUID,UInt64}())
     # `full` is a read that named its cells: nothing is compacted and nothing
     # is suppressed. The only reason to name a cell is not knowing, or not
     # remembering, what is in it -- and an agent that knows does not ask.
-    holds_code(c) = !full && get(sent, c.cell_id, nothing) == hash(c.code)
-    # Text this session already sent, whatever cell it came from. An output
-    # that hashes into this set is the agent's own input read back to it, which
-    # is the one thing a record never needs to carry.
-    held_text = full ? Set{UInt64}() : Set(values(sent))
+    holds_code(c) = !full && hash(c.code) in CODE_SENT
 
     entries = Any[]
     statuses = String[]
@@ -479,9 +483,9 @@ function record(nb::Pluto.Notebook, cells, finished::Bool, waited::Real;
             # the notebook and a summary line would claim it is.
             id = tryparse(Base.UUID, String(get(c, :cell_id, "")))
             fingerprint = hash(c)
-            previous = id === nothing ? nothing : get(seen, id, nothing)
+            previous = id === nothing ? nothing : get(REPORTED, id, nothing)
             previous !== nothing && first(previous) == fingerprint && continue
-            id === nothing || (seen[id] = (fingerprint, timestamp))
+            id === nothing || (REPORTED[id] = (fingerprint, timestamp))
             push!(entries, c)
             push!(statuses, get(c, :status, "success"))
             continue
@@ -489,23 +493,23 @@ function record(nb::Pluto.Notebook, cells, finished::Bool, waited::Real;
         id = string(c.cell_id)
         push!(statuses, cell_status(c))
         fingerprint = cell_fingerprint(c)
-        previous = get(seen, c.cell_id, nothing)
+        previous = get(REPORTED, c.cell_id, nothing)
         if !full && previous !== nothing && first(previous) == fingerprint
             since === nothing && push!(entries, (name = labels[id],
                                                  status = cell_status(c),
                                                  unchanged_since = iso_timestamp(last(previous))))
             continue
         end
-        seen[c.cell_id] = (fingerprint, timestamp)
+        REPORTED[c.cell_id] = (fingerprint, timestamp)
         info = cell_info(nb, c, labels; change = get(changes, id, nothing))
         # Code the agent holds is dropped, not the entry: status, output, logs
         # and any error are what the run was asked for.
         holds_code(c) ? (info = Base.structdiff(info, NamedTuple{(:code,)})) :
-                        (sent[c.cell_id] = hash(c.code))
+                        push!(CODE_SENT, hash(c.code))
         # ...and the same test on the way out: a cell whose rendered output is
-        # text this session supplied says nothing by repeating it.
-        haskey(info, :output) && info.output isa AbstractString &&
-            hash(String(info.output)) in held_text &&
+        # text the client supplied says nothing by repeating it.
+        !full && haskey(info, :output) && info.output isa AbstractString &&
+            hash(String(info.output)) in CODE_SENT &&
             (info = Base.structdiff(info, NamedTuple{(:output,)}))
         push!(entries, info)
     end

@@ -60,8 +60,7 @@ definition of a global per cell**.
   resolves it into an environment scoped to this notebook and records the
   versions inside the notebook file. No `Pkg.add`, no restart.
 - `edit` saves and runs. `run` is the backup path, for cells whose *non-reactive*
-  inputs changed — a file on disk, an RNG, an environment variable. The
-  from-scratch reproducibility check is `stop` then `open`, not `run`.
+  inputs changed — a file on disk, an RNG, an environment variable.
 
 ## Throwaway cells
 
@@ -102,6 +101,11 @@ so a long print loop loses exactly the part you wanted.
 Each cell entry carries `name` (the global it defines — that is also how you
 address it), `cell_id`, `status`, the rendered output, log entries, and an
 `error` message if it failed.
+
+Address a cell by that name, by its `cell_id`, or by any unambiguous prefix of
+one — `"0dfbd0b6"` is normally plenty, since ids are random. Cells that define
+nothing (prose, a plot, a bare `let`) have no name and the id is how you reach
+them.
 
 **Two things are left out on purpose, and neither is missing.**
 
@@ -164,9 +168,10 @@ Name the file after the experiment when the work is meant to be kept —
 `open(path="throughput-vs-batch-size.jl", create=true)`. A pathless
 `create` is a scratch notebook in a temp directory.
 
-`output(mime="text/html", path="…")` writes the notebook as one self-contained
-HTML file, code and outputs embedded, viewable with no Pluto server. Commit the
+`output(mime="text/html", path="…")` writes the notebook as HTML — code,
+outputs and state embedded, opening in any browser with no Pluto server running.
+The Pluto frontend loads from a CDN, so it is not an offline file. Commit the
 `.jl` and the `.html` together: that pair is the provenance record, and every
-figure in it traces back to a cell in a notebook that reruns from scratch.
+figure in it traces back to a cell.
 
 `stop` when you are done, so the server and its worker processes go away.

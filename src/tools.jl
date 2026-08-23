@@ -59,7 +59,7 @@ function _targets(args, nb, key="cells")
     Pluto.Cell[resolve_cell(nb, String(r)) for r in v]
 end
 
-const CELL_REF_DOC = "A cell NAME (a global it defines, e.g. \"throughput\"), a full UUID, or an unambiguous prefix of one."
+const CELL_REF_DOC = "A cell NAME (a global it defines, e.g. \"throughput\"), a full UUID, or any unambiguous prefix of one (\"0dfbd0b6\" is normally plenty — ids are random)."
 
 const NOTEBOOK_PARAM = ToolParameter(name="notebook", type="string",
     description="Which open notebook, if more than one is open: its file name. Omit for the current one — the last one opened.",
@@ -194,9 +194,7 @@ pluto_stop = MCPTool(
     name="stop",
     description="""Stop things, narrowing with each argument.
 
-No arguments: shut the whole session down — server, notebook workers, spill files. `notebook`: shut down that one notebook. `notebook` and `cell`: interrupt what the notebook is evaluating right now, the same as the browser's stop button. A cell cannot interrupt itself, which is why that last one is a tool.
-
-`stop` then `open` is also the from-scratch reproducibility check: a fresh worker, the file as the only input.""",
+No arguments: shut the whole session down — server, notebook workers, spill files. `notebook`: shut down that one notebook. `notebook` and `cell`: interrupt what the notebook is evaluating right now, the same as the browser's stop button. A cell cannot interrupt itself, which is why that last one is a tool.""",
     parameters=[
         NOTEBOOK_PARAM,
         ToolParameter(name="cell", type="string", description="With `notebook`: interrupt this cell's evaluation instead of shutting anything down. $CELL_REF_DOC", required=false),
@@ -212,10 +210,12 @@ No arguments: shut the whole session down — server, notebook workers, spill fi
         ref = get(args, "cell", nothing)
         if ref === nothing
             rm(spill_dir(nb); recursive=true, force=true)
-            delete!(CHANGES, nb.notebook_id)
-            delete!(SNAPSHOTS, nb.notebook_id)
-            delete!(REPORTED, nb.notebook_id)
-            delete!(CODE_SENT, nb.notebook_id)
+            # This notebook's share of the flat state. CODE_SENT is untouched:
+            # closing a notebook does not un-send its text to the agent.
+            for c in nb.cells
+                _forget_seen!(c.cell_id); _forget_reported!(c.cell_id)
+            end
+            filter!(e -> e.notebook_id != nb.notebook_id, CHANGES)
             path = nb.path
             s.current[] == nb.notebook_id && (s.current[] = nothing)
             Pluto.SessionActions.shutdown(s.session, nb; async=false)
@@ -299,7 +299,7 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
                 nb.cells_dict[c.cell_id] = c
             end
             _mark_seen!(nb.notebook_id, c.cell_id, code)
-            _mark_code_sent!(nb.notebook_id, c.cell_id, code)
+            _mark_code_sent!(code)
             # save=!throwaway is an implementation detail, not the contract:
             # skipping the intermediate write keeps a probe out of the file in
             # the common case. What the agent is promised is the deletion below.
@@ -320,9 +320,14 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
             _ok(r)
         else
             c = resolve_cell(nb, String(ref))
+            # A cell that BECOMES prose folds, the way one created as prose
+            # does. Only on the transition: a cell that was already prose keeps
+            # whatever fold state it has, because that state may be a human's
+            # deliberate choice to read the source while the agent edits it.
+            is_prose(code) && !is_prose(c.code) && (c.code_folded = true)
             c.code = code
             _mark_seen!(nb.notebook_id, c.cell_id, code)
-            _mark_code_sent!(nb.notebook_id, c.cell_id, code)
+            _mark_code_sent!(code)
             finished, waited, touched = run_with_deadline(nb, Pluto.Cell[c];
                                                           wait_seconds=_wait(args))
             _ok(record(nb, touched, finished, waited))
@@ -338,8 +343,8 @@ function _remove_cell!(nb, c)
         i === nothing || deleteat!(nb.cell_order, i)
         delete!(nb.cells_dict, c.cell_id)
     end
-    _forget_seen!(nb.notebook_id, c.cell_id)
-    _forget_reported!(nb.notebook_id, c.cell_id)
+    _forget_seen!(c.cell_id)
+    _forget_reported!(c.cell_id)
     return nothing
 end
 
@@ -347,7 +352,7 @@ pluto_run = MCPTool(
     name="run",
     description="""Recompute cells whose NON-reactive inputs changed: a file on disk, an RNG, an environment variable.
 
-The backup path, not the normal one. `edit` already saves and runs, and a human's browser edits run through Pluto's own UI, so reactivity covers everything that depends on the notebook's own code. For a from-scratch reproducibility check use `stop` then `open`, not this.""",
+The backup path, not the normal one. `edit` already saves and runs, and a human's browser edits run through Pluto's own UI, so reactivity covers everything that depends on the notebook's own code.""",
     parameters=[
         ToolParameter(name="cells", type="array", description="Cell references. $CELL_REF_DOC Omit to recompute everything.", required=false),
         wait_param(),
@@ -456,11 +461,10 @@ through these tools marks itself seen before running, so what is left in the log
 is genuinely somebody else's.
 """
 function _human_edits(nb, since)
-    log = get(CHANGES, nb.notebook_id, NamedTuple[])
     cutoff = something(parse_timestamp(since), -Inf)
     edits = Dict{String,NamedTuple}()
-    for e in log
-        e.at > cutoff || continue
+    for e in CHANGES
+        e.notebook_id == nb.notebook_id && e.at > cutoff || continue
         # `old_code` only. The log is a snapshot from when the event fired, and
         # the cell may have moved on since; the record's `code` is the cell's
         # text as it is NOW, and a stale entry must not override it.
@@ -520,7 +524,7 @@ pluto_output = MCPTool(
 
 `text/plain` is the value as Julia prints it, with nothing elided; the record only ever carries a summary. `image/png` is the picture, for a cell whose value is a figure. Ask a figure for `image/svg+xml` and you get the XML; `text/html`, `text/markdown`, `application/pdf` and anything else the value supports work the same way. Ask for something it cannot be and the answer lists what it can.
 
-Omit `cell` and the subject is the NOTEBOOK: `text/html` is the self-contained export, code and outputs embedded, viewable with no Pluto server; `text/plain` is the `.jl` source as it stands on disk.
+Omit `cell` and the subject is the NOTEBOOK: `text/html` is Pluto's export — code, outputs and state embedded, opens in a browser with no Pluto server, though the Pluto frontend itself loads from a CDN, so it is not an offline file; `text/plain` is the `.jl` source as it stands on disk.
 
 `path` writes the result to that file instead of carrying it, whatever the size, and returns the path — that is how you save a figure, a table, or the export. With no `path`, the result comes back inline, spilling to a file only when it is too big to carry.""",
     parameters=[
@@ -542,7 +546,7 @@ Omit `cell` and the subject is the NOTEBOOK: `text/html` is the self-contained e
         if ref === nothing
             bytes = want == "text/html" ? Vector{UInt8}(Pluto.generate_html(nb)) :
                     want == "text/plain" ? Vector{UInt8}(sprint(Pluto.save_notebook, nb)) :
-                    error("a notebook shows as \"text/html\" (self-contained export) or \"text/plain\" (its .jl source), not \"$want\"")
+                    error("a notebook shows as \"text/html\" (Pluto's export) or \"text/plain\" (its .jl source), not \"$want\"")
             out = dest === nothing ? nothing : String(dest)
             if out !== nothing
                 mkpath(dirname(abspath(out))); write(out, bytes)
