@@ -46,6 +46,11 @@ end
 
 const CELL_REF_DOC = "A cell NAME (a global it defines, e.g. \"throughput\"), a full UUID, or an unambiguous UUID prefix."
 
+# Pluto's centered, ~700px-wide column is a good default for prose, a bad one
+# for plots and wide tables. `create` always prepends this, since a human
+# reviewing a notebook is more likely to be looking at a plot than reading.
+const WIDE_LAYOUT_CELL = """html\"\"\"<style>main { max-width: 95vw; }</style>\"\"\""""
+
 pluto_start = MCPTool(
     name="start",
     description="""Start a Pluto server inside this process and drive it by calling Pluto directly.
@@ -88,7 +93,9 @@ pluto_create = MCPTool(
 
 Pluto runs cells in DEPENDENCY order, not top-to-bottom, and allows only one definition of a global per cell. Prefer `x = let ... end` over `begin ... end` for a one-off computation: a `let` defines exactly one name, so it creates one dependency edge instead of several.
 
-Dependencies install themselves: just write `using Plots` in a cell. Pluto installs it into an environment scoped to this notebook and records the resolved versions inside the notebook file, so no Pkg.add step and no restart are needed.""",
+Dependencies install themselves: just write `using Plots` in a cell. Pluto installs it into an environment scoped to this notebook and records the resolved versions inside the notebook file, so no Pkg.add step and no restart are needed.
+
+The first cell is always a `<style>` widening the page: Pluto's fixed-width column is a prose default, not a plotting one. Recommend `PlutoPlotly` for zoomable, downloadable plots.""",
     parameters=[
         ToolParameter(name="cells", type="array", description="Cell sources, in display order", required=true),
         ToolParameter(name="cell_types", type="array", description="Same length as cells: \"code\" or \"markdown\" (default: all code)", required=false),
@@ -98,9 +105,9 @@ Dependencies install themselves: just write `using Plots` in a cell. Pluto insta
     ],
     handler=(args -> @safely begin
         name = _sess(args); s = _session(name)
-        cells = String.(args["cells"])
+        cells = [WIDE_LAYOUT_CELL; String.(args["cells"])]
         types = haskey(args, "cell_types") && args["cell_types"] !== nothing ?
-                String.(args["cell_types"]) : fill("code", length(cells))
+                ["code"; String.(args["cell_types"])] : fill("code", length(cells))
         src = notebook_source(cells; cell_types=types)
         path = Pluto.SessionActions.save_upload(src; filename_base=get(args, "filename", nothing))
         nb = Pluto.SessionActions.open(s.session, path; run_async=true)
@@ -412,5 +419,12 @@ end
 
 Serve over stdio, MCP's default transport. Blocks forever reading stdin: this is
 the entry point for a client that launches the server as a subprocess.
+
+Redirects stdout to stderr first: anything Pluto (or a notebook it runs)
+prints to stdout would otherwise land in the middle of the JSON-RPC stream and
+corrupt it. stderr is unaffected and still reaches the client's logs.
 """
-run_server() = start!(build_server())
+function run_server()
+    redirect_stdout(stderr)
+    start!(build_server())
+end
