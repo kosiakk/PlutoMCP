@@ -284,10 +284,35 @@ function resolve_cell(nb::Pluto.Notebook, ref::AbstractString)
     for c in nb.cells
         labels[string(c.cell_id)] == ref && return c
     end
+    # Any OTHER name the cell declares. A variable is assigned in exactly one
+    # cell -- two is the MultipleDefinitionsError -- so a name identifies its
+    # cell whether or not it is the one we chose to display. `a, b = 1, 2` is
+    # reachable as `b`, and so is any method of a function defined here.
+    hits = [c for c in nb.cells if ref in declarations(nb, c)]
+    length(hits) == 1 && return only(hits)
+    length(hits) > 1 &&
+        error("\"$ref\" is defined in $(length(hits)) cells — the notebook has a " *
+              "multiple-definition error; address them by id")
     hits = [c for c in nb.cells if startswith(string(c.cell_id), ref)]
     length(hits) == 1 && return only(hits)
     length(hits) > 1 && error("\"$ref\" is ambiguous — it matches $(length(hits)) cells")
     error("no cell named or identified by \"$ref\"")
+end
+
+"""
+    declarations(nb, c) -> Vector{String}
+
+Every name this cell declares: globals it assigns, and functions it defines.
+
+Pluto's reactivity graph again, never the source. `cell_labels` picks ONE of
+these to show, because a cell needs a name a reader can hold on to; this is the
+whole set, because a cell that defines `a, b` answers to both.
+"""
+function declarations(nb::Pluto.Notebook, c::Pluto.Cell)
+    node = Pluto.updated_topology(nb.topology, nb, nb.cells).nodes[c]
+    names = String[string(d) for d in node.definitions]
+    append!(names, String[string(f) for f in node.funcdefs_without_signatures])
+    unique!(names)
 end
 
 # ------------------------------------------------------------------ reading --

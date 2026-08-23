@@ -143,6 +143,20 @@ end
     @test isempty(err) || occursin("ambiguous", err)
 end
 
+@testset "a cell answers to every name it declares" begin
+    # A variable is assigned in exactly one cell — two is the
+    # MultipleDefinitionsError — so any name it declares identifies it, whether
+    # or not it is the one shown as the cell's name.
+    nb = offline_notebook(["a, b = 1, 2", "f(x::Int) = x", "md\"prose\""])
+    @test Set(P.declarations(nb, nb.cells[1])) == Set(["a", "b"])
+    @test "f" in P.declarations(nb, nb.cells[2])
+    @test isempty(P.declarations(nb, nb.cells[3]))
+
+    @test P.resolve_cell(nb, "b").code == "a, b = 1, 2"     # not the displayed name
+    @test P.resolve_cell(nb, "a").code == "a, b = 1, 2"     # which is `a`
+    @test P.cell_labels(nb)[string(nb.cells[1].cell_id)] == "a"
+end
+
 @testset "truncate_payload" begin
     small = "x"^100
     @test P.truncate_payload(small) === small          # under the limit, untouched
