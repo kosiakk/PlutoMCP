@@ -512,3 +512,92 @@ function notebook_source(cells::Vector{String};
 end
 
 _wrap_markdown(src::String) = startswith(strip(src), "md\"") ? src : "md\"\"\"\n$src\n\"\"\""
+
+# ------------------------------------------------------------- injected help --
+
+#=
+`AsPNG(fig)` exists for one reason: Pluto's MIME ordering prefers SVG whenever a
+backend offers both, and MCP images are PNG. A plot cell therefore comes back as
+~100 KB of markup no client can show, when the agent wanted a picture.
+
+It is injected into the WORKER, not written into the notebook, because the
+notebook is the artifact a human keeps: a helper the agent needs is not
+something the reader should have to scroll past.
+
+Injecting it into the current workspace module would not survive: Pluto makes a
+FRESH `Main.workspace#N` on every reactive run (`bump_workspace_module`) and
+moves the notebook's variables across, so anything defined in the old module is
+simply gone next run. The two durable places are the worker's `Main`, which is
+never bumped, and `PlutoRunner.workspace_preamble` -- the list of expressions
+Pluto evaluates inside each new workspace module, which is how `PlutoRunner`
+itself becomes visible to cells. So: define the module in `Main` once, and add
+one `using` to the preamble.
+=#
+const ASPNG_SOURCE = raw"""
+module PlutoMCP
+
+export AsPNG
+
+# AsPNG(fig): show `fig` as a PNG, whatever its native format.
+struct AsPNG{T}
+    fig::T
+end
+
+Base.showable(::MIME"image/png", ::AsPNG) = true
+
+function Base.show(io::IO, m::MIME"image/png", p::AsPNG)
+    Base.showable(m, p.fig) && return show(io, m, p.fig)
+    # Backends that cannot show/png (Plots' plotly, say) still save one. Look
+    # the writer up in the figure's OWN module -- Plots.savefig for a
+    # Plots.Plot, Makie.save for a Figure -- which needs no knowledge of what
+    # the notebook happens to have `using`ed.
+    ws = parentmodule(typeof(p.fig))
+    path = tempname() * ".png"
+    try
+        for (name, args) in ((:savefig, (p.fig, path)), (:save, (path, p.fig)))
+            isdefined(ws, name) || continue
+            try
+                Base.invokelatest(getfield(ws, name), args...)
+                isfile(path) && return write(io, read(path))
+            catch
+            end
+        end
+        error("cannot render $(typeof(p.fig)) as PNG: it has no image/png show method, savefig or save")
+    finally
+        rm(path; force=true)
+    end
+end
+
+end
+"""
+
+"""
+    inject_helpers!(session, nb)
+
+Make `PlutoMCP.AsPNG` available to every cell of this notebook, now and after
+each reactive run. Best-effort: failing to add a convenience is never a reason
+to fail the `open` that asked for it.
+"""
+function inject_helpers!(session, nb::Pluto.Notebook)
+    try
+        Pluto.WorkspaceManager.eval_in_workspace((session, nb), Expr(:toplevel,
+            # Define it once in the worker's Main. Re-evaluating would print a
+            # "replacing module" warning and invalidate the type on every open.
+            :(isdefined(Main, :PlutoMCP) ||
+              Core.eval(Main, $(QuoteNode(Meta.parseall(ASPNG_SOURCE))))),
+            # Every future workspace module gets it, the same way PlutoRunner does.
+            :(let e = :(using Main.PlutoMCP)
+                  e in PlutoRunner.workspace_preamble ||
+                      push!(PlutoRunner.workspace_preamble, e)
+              end),
+            # ...and the one that already exists.
+            :(using Main.PlutoMCP),
+        ))
+    catch e
+        # Warned, not swallowed: a helper that silently stopped existing is
+        # found much later, as an UndefVarError in somebody's plotting cell.
+        # stderr is safe -- the JSON-RPC transport owns stdout, nothing else.
+        @warn "PlutoMCP.AsPNG could not be injected into the notebook workspace" exception=e
+    end
+    return nothing
+end
