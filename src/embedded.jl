@@ -437,6 +437,9 @@ cells_info(nb::Pluto.Notebook) =
 """Run `cells` synchronously: save the file, push patches to every browser, return when done."""
 function run_cells!(name::AbstractString, nb::Pluto.Notebook, cells::Vector{Pluto.Cell}; save::Bool=true)
     s = _session(name)
+    # Cheap when nothing restarted, and the only moment we are guaranteed to be
+    # asked before a cell runs.
+    ensure_helpers!(s.session, nb)
     isempty(cells) || Pluto.update_save_run!(s.session, nb, cells; run_async=false, save)
     return nb
 end
@@ -487,6 +490,9 @@ function run_with_deadline(name::AbstractString, nb::Pluto.Notebook, cells::Vect
                            wait_seconds::Real=1.0, save::Bool=true)
     s = _session(name)
     isempty(cells) && return (true, 0.0, Pluto.Cell[])
+    # Every run funnels through here, which makes it the one place that can
+    # notice the worker was replaced under us (see ensure_helpers!).
+    ensure_helpers!(s.session, nb)
     # Pluto's own run_async=true does exactly this -- @async around the
     # synchronous path (see maybe_async in Run.jl) -- but doesn't hand back
     # the Task, so a caller is left guessing whether a run has finished from
@@ -631,6 +637,36 @@ end
 end
 """
 
+# Which worker process each notebook's helpers were injected into. Pluto starts
+# a NEW process when the package environment changes -- `using Plots` in a cell
+# installs a package and restarts -- and the fresh process has neither
+# `Main.PlutoMCP` nor the preamble entry. Injecting once at `open` is therefore
+# not enough: the helper disappears exactly when a notebook first acquires a
+# plotting library, which is when it is about to be needed.
+const INJECTED_WORKER = Dict{Base.UUID,Any}()
+
+_current_worker(session, nb::Pluto.Notebook) =
+    try
+        ws = Pluto.WorkspaceManager.get_workspace((session, nb); allow_creation=false)
+        ws === nothing ? nothing : ws.worker
+    catch
+        nothing  # discarded workspace, or an internal that moved: fall through and re-inject
+    end
+
+"""
+    ensure_helpers!(session, nb)
+
+Re-inject the helpers if this notebook is running in a worker we have not
+injected into. The check is in-process -- an identity comparison against the
+`Workspace`'s worker -- so the common case costs no round trip to the worker
+and nothing is evaluated.
+"""
+function ensure_helpers!(session, nb::Pluto.Notebook)
+    worker = _current_worker(session, nb)
+    worker !== nothing && get(INJECTED_WORKER, nb.notebook_id, nothing) === worker && return nothing
+    inject_helpers!(session, nb)
+end
+
 """
     inject_helpers!(session, nb)
 
@@ -653,6 +689,11 @@ function inject_helpers!(session, nb::Pluto.Notebook)
             # ...and the one that already exists.
             :(using Main.PlutoMCP),
         ))
+        # Record only on success, and only after the eval: the workspace may
+        # not have existed until eval_in_workspace made it.
+        let worker = _current_worker(session, nb)
+            worker === nothing || (INJECTED_WORKER[nb.notebook_id] = worker)
+        end
     catch e
         # Warned, not swallowed: a helper that silently stopped existing is
         # found much later, as an UndefVarError in somebody's plotting cell.

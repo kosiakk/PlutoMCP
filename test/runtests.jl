@@ -751,6 +751,25 @@ end
     end
 end
 
+@testset "AsPNG survives Pluto restarting the worker process" begin
+    # Installing a package restarts the notebook PROCESS, not just the
+    # workspace module -- so `Main.PlutoMCP` and the preamble entry both go
+    # away, and injecting once at `open` is not enough. `unmake_workspace`
+    # is that restart, without the minutes a real Pkg install would cost.
+    nb = P._notebook(S)
+    old_worker = Pluto.WorkspaceManager.get_workspace((P._session(S).session, nb)).worker
+    Pluto.WorkspaceManager.unmake_workspace((P._session(S).session, nb); async=false, verbose=false)
+    @test !Pluto.Malt.isrunning(old_worker)
+
+    r = call("edit", Dict("session" => S, "mode" => "insert",
+                          "code" => "helper_after_restart = string(PlutoMCP.AsPNG)",
+                          "wait_seconds" => 120))
+    # A restart re-runs the whole notebook, so the record is every cell, not one.
+    @test occursin("AsPNG", only(c.output for c in r.cells if c.name == "helper_after_restart"))
+    call("edit", Dict("session" => S, "cell" => "helper_after_restart",
+                      "mode" => "delete", "wait_seconds" => 60))
+end
+
 @testset "bond: set slider/widget values" begin
     call("edit", Dict("session" => S, "mode" => "insert",
                       "code" => "slider = @bind slider html\"<input type=range>\"",
