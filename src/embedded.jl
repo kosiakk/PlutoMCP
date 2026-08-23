@@ -305,7 +305,8 @@ happened.
 the browser already shows them running, and `status` reports when they are done.
 
 Returns as soon as a cell newly errors, rather than serving out the remaining
-deadline: the rest of a reactive run cannot un-break it.
+deadline: the rest of a reactive run cannot un-break it. `finished` in that
+case reflects whether the Task happened to be done too, not just the error.
 
 This is bounded by Pluto running a notebook's cells sequentially in one worker.
 An error cannot be reported before the cell producing it has had its turn, so a
@@ -316,35 +317,26 @@ function run_with_deadline(name::AbstractString, nb::Pluto.Notebook, cells::Vect
     s = _session(name)
     isempty(cells) && return (true, 0.0)
 
-    # Timestamps are taken BEFORE starting. "Not busy" alone is not evidence of
-    # having finished: in the first instants after an async start nothing is
-    # marked queued yet, so the notebook looks idle only because the run has not
-    # begun. A target whose last_run_timestamp advanced has genuinely re-run;
-    # `saw_busy` covers slower cells whose timestamps advance later.
-    before = Dict(c.cell_id => c.output.last_run_timestamp for c in cells)
     errored_before = Set(c.cell_id for c in nb.cells if c.errored)
-    Pluto.update_save_run!(s.session, nb, cells; run_async=true, save)
-
-    # Notebook-wide, so a fast target with slow DEPENDENTS still reads as busy.
-    busy() = any(c -> c.running || c.queued, nb.cells)
-    advanced() = all(cells) do c
-        !haskey(nb.cells_dict, c.cell_id) ||
-            c.output.last_run_timestamp > get(before, c.cell_id, -Inf)
-    end
+    # Pluto's own run_async=true does exactly this -- @async around the
+    # synchronous path (see maybe_async in Run.jl) -- but doesn't hand back
+    # the Task, so a caller is left guessing whether a run has finished from
+    # cell state alone. Doing the @async ourselves makes istaskdone the literal
+    # truth instead of a heuristic over `running`/`queued`/timestamps, which
+    # could read "idle" in the instant before an async run had even started.
+    task = @async Pluto.update_save_run!(s.session, nb, cells; run_async=false, save)
     # Only NEW errors are worth stopping for; a notebook can already contain an
     # unrelated broken cell, and that is not news about this run.
     new_error() = any(c -> c.errored && !(c.cell_id in errored_before), nb.cells)
 
-    t0 = time(); saw_busy = false
-    while time() - t0 < block
-        saw_busy |= busy()
-        !busy() && (saw_busy || advanced()) && return (true, time() - t0)
+    t0 = time()
+    while !istaskdone(task) && time() - t0 < block
         # Surface a failure the moment it happens rather than serving out the
         # deadline: the rest of a reactive run cannot un-break it.
-        new_error() && return (!busy(), time() - t0)
+        new_error() && return (istaskdone(task), time() - t0)
         sleep(0.02)
     end
-    return (!busy() && (saw_busy || advanced()), time() - t0)
+    return (istaskdone(task), time() - t0)
 end
 
 """Cells currently running or queued, anywhere in the notebook."""

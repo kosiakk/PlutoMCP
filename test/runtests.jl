@@ -205,6 +205,26 @@ end
     @test isempty(call("run", Dict("session" => S, "cells" => ["b"], "block" => 60)).errored)
 end
 
+@testset "run_with_deadline: finished means finished, even mid-error-transition" begin
+    # Regression for #8: the old saw_busy/advanced heuristic could report
+    # finished=true (or leave output stale) when a cell moved from one kind of
+    # error to another, because neither `running` nor last_run_timestamp is a
+    # reliable signal for a run that fails before it ever properly starts (a
+    # parse error, notably). A default `block` (no generous override) must
+    # still reflect the ACTUAL cell state once finished=true comes back.
+    call("edit", Dict("session" => S, "cell_id" => "b",
+                      "new_source" => "b = sqrt(-1)", "block" => 60))
+    id = string(P.resolve_cell(P._notebook(S), "b").cell_id)   # code no longer
+                                                                # parses -> loses its name below
+    r = call("edit", Dict("session" => S, "cell_id" => id, "new_source" => "b = ("))
+    @test r.finished
+    out = call("output", Dict("session" => S, "cell_id" => id))
+    @test out.kind == "parse_error"
+
+    call("edit", Dict("session" => S, "cell_id" => id,
+                      "new_source" => "b = 7", "block" => 60))
+end
+
 @testset "logs" begin
     call("edit", Dict("session" => S, "edit_mode" => "insert",
                       "new_source" => "loud = (println(\"stdout line\"); @info \"info line\"; 1)",
