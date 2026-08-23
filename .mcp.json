@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "pluto": {
+      "command": "julia",
+      "args": [
+        "--project=${CLAUDE_PLUGIN_ROOT}",
+        "${CLAUDE_PLUGIN_ROOT}/bin/pluto_mcp_server.jl"
+      ]
+    }
+  }
+}

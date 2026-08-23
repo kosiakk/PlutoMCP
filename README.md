@@ -78,25 +78,39 @@ places, which Pluto forbids by design.
 
 ## Setup
 
-As a Claude Code plugin, which configures the server for you:
-
-```sh
-claude plugin add kosiakk/PlutoMCP
-```
-
-Or by hand:
+Julia 1.10 or newer, and the package's own dependencies:
 
 ```sh
 git clone https://github.com/kosiakk/PlutoMCP.git ~/Documents/PlutoMCP
 cd ~/Documents/PlutoMCP && julia --project=. -e 'import Pkg; Pkg.instantiate()'
-claude mcp add pluto -- julia --project=$HOME/Documents/PlutoMCP \
-    $HOME/Documents/PlutoMCP/bin/pluto_mcp_server.jl
 ```
 
-The plugin also ships two skills — `pluto-workflow` (the loop, throwaway probe
-cells, what the record means) and `pluto-seeing` (how to look at data without
-wasting context). The MCP server itself stays standalone and client-agnostic;
-the plugin is packaging, not a dependency.
+Then, as a Claude Code plugin — the repo is its own single-plugin marketplace,
+so it is two commands:
+
+```sh
+claude plugin marketplace add kosiakk/PlutoMCP
+```
+
+```sh
+claude plugin install pluto@plutomcp
+```
+
+Point the marketplace at your clone instead (`claude plugin marketplace add
+~/Documents/PlutoMCP`) if you want the installed plugin to track your working
+copy. Restart Claude Code afterwards; `claude plugin details pluto@plutomcp`
+should list two skills and one MCP server.
+
+Or register just the server, with no plugin:
+
+```sh
+claude mcp add pluto -- julia --project=$HOME/Documents/PlutoMCP $HOME/Documents/PlutoMCP/bin/pluto_mcp_server.jl
+```
+
+The plugin adds two skills — `pluto-workflow` (the loop, throwaway probe cells,
+what the record means) and `pluto-seeing` (how to look at data without wasting
+context). The MCP server itself stays standalone and client-agnostic; the
+plugin is packaging, not a dependency.
 
 ## Tools
 

@@ -1,0 +1,16 @@
+{
+  "name": "plutomcp",
+  "owner": {
+    "name": "Alexander Kosenkov"
+  },
+  "metadata": {
+    "description": "Author and run Julia Pluto notebooks from Claude, with a human reviewing live in the browser."
+  },
+  "plugins": [
+    {
+      "name": "pluto",
+      "source": "./",
+      "description": "MCP server plus two skills for authoring, running and reviewing Julia Pluto notebooks."
+    }
+  ]
+}
