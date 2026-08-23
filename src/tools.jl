@@ -315,6 +315,13 @@ For probing values that don't belong in the saved notebook: `@doc sym`, `methods
         catch e
             return _err("parse error: $(sprint(showerror, e))")
         end
+        # Meta.parse doesn't throw for a syntax error -- incomplete or
+        # otherwise malformed input comes back as an Expr(:incomplete, ...)
+        # wrapping the real ParseError, which only surfaces once evaluated.
+        # Report it here, cleanly, instead of as a Malt remote-exception
+        # traceback from the "eval failed" branch below.
+        Meta.isexpr(parsed, :incomplete) &&
+            return _err("parse error: $(sprint(showerror, parsed.args[1]))")
         try
             result = Pluto.WorkspaceManager.eval_fetch_in_workspace((s.session, nb), parsed)
             _ok((value=repr(result), type=string(typeof(result))))

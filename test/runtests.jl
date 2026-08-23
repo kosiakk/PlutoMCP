@@ -319,7 +319,14 @@ end
     call("execute", Dict("session" => S, "expr" => "probed * 2"))
     @test length(call("read", Dict("session" => S))) == before
 
-    @test call("execute", Dict("session" => S, "expr" => "1 +")).error   # parse error
+    # Meta.parse doesn't throw for incomplete input -- it returns an
+    # Expr(:incomplete, ...); must still be reported as a clean parse error,
+    # not an "eval failed" Malt remote-exception traceback.
+    bad = call("execute", Dict("session" => S, "expr" => "1 +"))
+    @test bad.error
+    @test occursin("parse error", bad.message)
+    @test !occursin("Malt", bad.message)
+
     @test call("execute", Dict("session" => S, "expr" => "undefined_name_xyz")).error
 
     call("edit", Dict("session" => S, "cell_id" => "probed", "edit_mode" => "delete"))
