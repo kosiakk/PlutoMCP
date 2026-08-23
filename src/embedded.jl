@@ -27,17 +27,16 @@ const SESSIONS = Dict{String,Any}()
 # (session name, notebook_id) => log of cell-level edits seen via
 # StateChangeEvent, oldest first. A DROPPING buffer: a notification path must
 # never be able to block the thing it observes. Keyed per notebook, not just
-# per session -- a session can have several open (see `list`), and a shared
-# per-session log would misattribute every OTHER notebook's untouched cells as
-# newly deleted the moment any one of them changed (they'd be absent from
-# that event's `nb.cells`, which is exactly what "deleted" used to mean).
+# per session -- a session can have several open (see `list`), and a shared log
+# would read every OTHER notebook's cells as freshly deleted the moment any one
+# of them fired an event, since they are absent from that event's `nb.cells`.
 const CHANGES = Dict{Tuple{String,Base.UUID},Vector{NamedTuple}}()
 const CHANGES_MAX = 256
 
 # (session name, notebook_id) => cell_id => code, as of the last
 # StateChangeEvent. Lets the event hook tell an edit apart from a mere state
-# transition (queued/running), and reconstructs old/new source for the diff
-# `status` reports. Same per-notebook keying as CHANGES, for the same reason.
+# transition (queued/running), and reconstructs the `old_code`/`new_code` pair
+# `read` reports. Same per-notebook keying as CHANGES, for the same reason.
 const SNAPSHOTS = Dict{Tuple{String,Base.UUID},Dict{Base.UUID,String}}()
 
 """
@@ -45,8 +44,8 @@ const SNAPSHOTS = Dict{Tuple{String,Base.UUID},Dict{Base.UUID,String}}()
 
 Record `code` as already-known for `cell_id` before running it, so the
 StateChangeEvent that follows does not report our own edit back to us as a
-change. `status` exists to tell the agent what a HUMAN did while it was not
-looking; an edit the agent just made through these tools is not that.
+change. The change log exists to tell the agent what a HUMAN did while it was
+not looking; an edit the agent just made through these tools is not that.
 """
 function _mark_seen!(name::AbstractString, notebook_id::Base.UUID, cell_id, code::AbstractString)
     snap = get!(SNAPSHOTS, (String(name), notebook_id), Dict{Base.UUID,String}())
@@ -173,6 +172,9 @@ function stop_session(name::AbstractString)
     end
     for k in collect(keys(SNAPSHOTS))
         first(k) == nm && delete!(SNAPSHOTS, k)
+    end
+    for k in collect(keys(REPORTED))
+        first(k) == nm && delete!(REPORTED, k)
     end
     return nothing
 end
@@ -345,25 +347,84 @@ function cell_info(nb::Pluto.Notebook, c::Pluto.Cell, labels=cell_labels(nb);
     return info
 end
 
+#=
+(session, notebook) => cell_id => (fingerprint, reported_at) for the last
+version of that cell this SESSION was told about.
+
+The reference point is the agent's context, not the notebook's history, and
+that is why the map is written only while building a record -- never from a
+StateChangeEvent. A cell that changed and changed back between two records was
+never reported in between, so there is nothing for the agent to re-read: ABA is
+the right answer here, not a bug to defend against.
+=#
+const REPORTED = Dict{Tuple{String,Base.UUID},Dict{Base.UUID,Tuple{UInt64,Float64}}}()
+
+"Drop a cell from the reported map, so a deleted cell stops costing memory."
+function _forget_reported!(name::AbstractString, notebook_id::Base.UUID, cell_id)
+    key = (String(name), notebook_id)
+    haskey(REPORTED, key) && delete!(REPORTED[key], cell_id)
+    return nothing
+end
+
 """
-    record(nb, cells, finished, waited; extra...) -> NamedTuple
+    record(name, nb, cells, finished, waited; since, changes, extra...) -> NamedTuple
 
 The one response shape: `status, waited_seconds, timestamp, cells`.
 
 Every tool that runs, waits or reads returns this, so the agent parses one
 thing and reads one word for progress. `status` describes THIS operation --
-aggregated over the cells the record reports, not over the whole notebook --
-so an unrelated broken cell elsewhere cannot make every later edit look like a
+aggregated over the cells the record reports, not over the whole notebook -- so
+an unrelated broken cell elsewhere cannot make every later edit look like a
 failure. A full `read` reports every cell, which is where notebook-wide state
-belongs. `timestamp` is the server clock and round-trips straight back into
-`read(since=...)`: the agent copies it, never computes it.
+belongs.
+
+A cell this session already saw, byte-identical, comes back as three fields:
+`name`, `status`, `unchanged_since`. A reactive cascade over a large notebook is
+mostly cells that re-ran to the same answer, and re-sending their code and
+output every time is the single biggest thing this server can waste. The
+cascade stays fully visible: an unchanged cell is compressed, never hidden.
+With `since`, unchanged cells are dropped entirely -- the same comparison,
+presented as a delta instead of a summary.
+
+`timestamp` is stamped BEFORE any cell is read, and it round-trips straight
+into `read(since=...)`. Stamp-first makes delivery at-least-once: a change
+landing while the record is being assembled dates at or after the stamp, so the
+next read shows it again. Stamp-last would lose it. It is deliberately not
+taken under `nb.executetoken`: that is Pluto's RUN lock, held for the whole
+reactive run, so waiting for it would make every `wait_seconds=0` call block
+until the run it was trying not to wait for had finished.
 """
-function record(nb::Pluto.Notebook, cells, finished::Bool, waited::Real; extra...)
+function record(name::AbstractString, nb::Pluto.Notebook, cells, finished::Bool, waited::Real;
+                since::Union{Nothing,Real}=nothing,
+                changes::Dict{String,<:NamedTuple}=Dict{String,NamedTuple}(), extra...)
+    timestamp = time()
     labels = cell_labels(nb)
-    entries = [c isa Pluto.Cell ? cell_info(nb, c, labels) : c for c in cells]
-    merge((status = aggregate_status([get(e, :status, "success") for e in entries], finished),
+    seen = get!(REPORTED, (String(name), nb.notebook_id), Dict{Base.UUID,Tuple{UInt64,Float64}}())
+
+    entries = Any[]
+    statuses = String[]
+    for c in cells
+        if !(c isa Pluto.Cell)          # a synthetic entry: a deleted cell
+            push!(entries, c)
+            push!(statuses, get(c, :status, "success"))
+            continue
+        end
+        id = string(c.cell_id)
+        push!(statuses, cell_status(c))
+        fingerprint = cell_fingerprint(c)
+        previous = get(seen, c.cell_id, nothing)
+        if previous !== nothing && first(previous) == fingerprint
+            since === nothing && push!(entries, (name = labels[id],
+                                                 status = cell_status(c),
+                                                 unchanged_since = last(previous)))
+            continue
+        end
+        seen[c.cell_id] = (fingerprint, timestamp)
+        push!(entries, cell_info(nb, c, labels; change = get(changes, id, nothing)))
+    end
+    merge((status = aggregate_status(statuses, finished),
            waited_seconds = round(Float64(waited); digits=2),
-           timestamp = time(),
+           timestamp = timestamp,
            cells = entries),
           NamedTuple(extra))
 end
@@ -411,13 +472,12 @@ was already there is pure latency. A package load or a full-corpus plot can take
 minutes, and blocking on that is worse. So: start, wait briefly, say which
 happened.
 
-`finished=false` is neither an error nor a timeout. The cells are still running,
-the browser already shows them running, and `read(wait_seconds=N)` reports when
-they are done.
+Expiry is neither an error nor a timeout: the cells are still running, the
+browser already shows them running, and `read(wait_seconds=N)` reports when they
+are done.
 
 Returns as soon as a cell newly errors, rather than serving out the remaining
-deadline: the rest of a reactive run cannot un-break it. `finished` in that
-case reflects whether the Task happened to be done too, not just the error.
+deadline: the rest of a reactive run cannot un-break it.
 
 This is bounded by Pluto running a notebook's cells sequentially in one worker.
 An error cannot be reported before the cell producing it has had its turn, so a

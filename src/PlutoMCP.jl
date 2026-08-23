@@ -9,7 +9,7 @@ Pluto runs inside this process and is called directly, so:
     the same object, and `StateChangeEvent` reports them if you want to react.
 
 Everything of substance lives in Pluto. This package contributes a cell-naming
-convention, a short-block-then-async run policy, and the MCP surface.
+convention, one result record, and the MCP surface.
 """
 module PlutoMCP
 

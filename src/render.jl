@@ -96,9 +96,15 @@ const SKETCH_TAIL = 3
 
 _is_more(e) = e isa AbstractString && e == "more"
 
-"""Render `[a, b, …, y, z]` from already-formatted element strings."""
-function _joined(vals::Vector{String}, truncated::Bool)
-    if length(vals) > SKETCH_HEAD + SKETCH_TAIL
+"""Render `[a, b, …, y, z]` from already-formatted element strings.
+
+`full` keeps every element Pluto sent instead of trimming to head and tail. The
+record wants one line; `output` wants everything there is, and everything there
+is means the elements Pluto chose to store, since the value itself lives in the
+worker.
+"""
+function _joined(vals::Vector{String}, truncated::Bool; full::Bool=false)
+    if !full && length(vals) > SKETCH_HEAD + SKETCH_TAIL
         vals = [vals[1:SKETCH_HEAD]; "…"; vals[end-SKETCH_TAIL+1:end]]
     elseif truncated
         vals = [vals[1:end-1]; "…"; vals[end]]
@@ -114,11 +120,11 @@ one-line sketch at depth+1, and anything deeper than that is `…`. This is the
 "one level of fields, no recursion" rule, enforced by construction rather than
 by hoping the data is shallow.
 """
-function _leaf(x, depth::Int)
+function _leaf(x, depth::Int; full::Bool=false)
     _is_more(x) && return "…"
     if x isa Tuple && length(x) == 2
         body, _ = x
-        body isa AbstractDict && return depth >= 1 ? "…" : sketch(body, depth + 1)
+        body isa AbstractDict && return depth >= 1 ? "…" : sketch(body, depth + 1; full)
         return body isa AbstractString ? body : string(body)
     end
     string(x)
@@ -141,7 +147,7 @@ At depth 0 it reads as a description: type, count, head … tail. Nested one
 level in it collapses to Julia's own array-literal shape (`Float64[1.0, 2.0]`),
 which stays readable inside a struct's field list. There is no depth 2.
 """
-function sketch(b::AbstractDict, depth::Int=0)
+function sketch(b::AbstractDict, depth::Int=0; full::Bool=false)
     t = get(b, :type, nothing)
     t === :circular && return "#= circular reference =#"
     haskey(b, :rows) && return _sketch_table(b)
@@ -151,27 +157,27 @@ function sketch(b::AbstractDict, depth::Int=0)
     shown = [e for e in els if !_is_more(e)]
 
     if t === :Array || t === :Set
-        vals = String[_leaf(e isa Tuple ? last(e) : e, depth) for e in shown]
+        vals = String[_leaf(e isa Tuple ? last(e) : e, depth; full) for e in shown]
         depth >= 1 && return string(rstrip(String(get(b, :prefix, "")), [' ', ':']),
-                                    "[", _joined(vals, truncated), "]")
+                                    "[", _joined(vals, truncated; full), "]")
         return string(_container_type(b), ", ", _count(length(shown), truncated),
-                      ": [", _joined(vals, truncated), "]")
+                      ": [", _joined(vals, truncated; full), "]")
     elseif t === :Dict
         # elements are ((keybody, keymime), (valbody, valmime))
-        vals = String[string(_leaf(first(e), depth), " => ", _leaf(last(e), depth))
+        vals = String[string(_leaf(first(e), depth; full), " => ", _leaf(last(e), depth; full))
                       for e in shown if e isa Tuple]
-        depth >= 1 && return string("Dict(", _joined(vals, truncated), ")")
+        depth >= 1 && return string("Dict(", _joined(vals, truncated; full), ")")
         return string(_container_type(b), ", ", _count(length(shown), truncated; unit="entries"),
-                      ": {", _joined(vals, truncated), "}")
+                      ": {", _joined(vals, truncated; full), "}")
     elseif t === :Tuple
-        return string("(", _joined(String[_leaf(last(e), depth) for e in shown if e isa Tuple],
-                                   truncated), ")")
+        return string("(", _joined(String[_leaf(last(e), depth; full) for e in shown if e isa Tuple],
+                                   truncated; full), ")")
     elseif t === :NamedTuple
-        return string("(", join(String[string(first(e), " = ", _leaf(last(e), depth))
+        return string("(", join(String[string(first(e), " = ", _leaf(last(e), depth; full))
                                        for e in shown if e isa Tuple], ", "), ")")
     elseif t === :struct
         return string(get(b, :prefix_short, get(b, :prefix, "struct")), "(",
-                      join(String[string(first(e), " = ", _leaf(last(e), depth))
+                      join(String[string(first(e), " = ", _leaf(last(e), depth; full))
                                   for e in shown if e isa Tuple], ", "), ")")
     elseif t === :Pair
         kv = get(b, :key_value, nothing)
@@ -261,6 +267,57 @@ function render_logs(nb::Pluto.Notebook, c::Pluto.Cell, label::AbstractString)
         nothing
     end
     (kept, path === nothing ? "+$n earlier entries dropped" : "+$n earlier entries → $path")
+end
+
+# -------------------------------------------------------------- fingerprints --
+
+"""
+Strip the parts of a Pluto tree object that identify the OBJECT rather than
+what was rendered.
+
+`:objectid` is the address Pluto's frontend uses to ask for more rows. Re-running
+`v = ones(5)` allocates a new array and therefore a new objectid, with byte-identical
+output -- and a fingerprint that included it would call that a change on every
+single run, which is exactly the case dedup exists to collapse.
+"""
+_identity(x) = x
+_identity(b::Vector{UInt8}) = b                       # image bytes: hash as-is
+_identity(d::AbstractDict) =
+    Dict(k => _identity(v) for (k, v) in d if k !== :objectid && k != "objectid")
+_identity(t::Tuple) = map(_identity, t)
+_identity(v::AbstractVector) = map(_identity, v)
+
+"""
+    cell_fingerprint(c) -> UInt64
+
+Identity of everything a record would say about this cell, taken BEFORE any
+truncation: code, status, mime, output body, logs.
+
+Before truncation on purpose. Two different 40 MB outputs share a head and a
+tail, so fingerprinting the payload would report them as the same cell. The
+fingerprint answers "would the agent read anything new", and the agent reads the
+truncated form only because we shortened the real one.
+"""
+function cell_fingerprint(c::Pluto.Cell)
+    h = hash(c.code, UInt64(0x9e3779b9))
+    h = hash(cell_status(c), h)
+    h = hash(string(c.output.mime), h)
+    h = try
+        hash(_identity(c.output.body), h)
+    catch
+        # A body Pluto built out of something unhashable is rare and not worth
+        # failing a record over; fall back to its printed form.
+        hash(string(c.output.body), h)
+    end
+    for e in c.logs
+        h = hash(_loglevel(e), h)
+        h = hash(_logtext(get(e, "msg", "")), h)
+        for kv in get(e, "kwargs", ())
+            kv isa Tuple && length(kv) == 2 &&
+                (h = hash(string(first(kv)), hash(_logtext(last(kv)), h)))
+        end
+    end
+    h
 end
 
 # --------------------------------------------------------------- cell output --

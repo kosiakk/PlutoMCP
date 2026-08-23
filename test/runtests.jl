@@ -22,6 +22,13 @@ end
 offline_notebook(cells::Vector{String}; cell_types::Vector{String}=fill("code", length(cells))) =
     P.notebook_source(cells; cell_types)
 
+"""The rendered output of one cell, whichever shape the record used.
+
+A record compacts cells this session has already been shown, so a value the
+suite wants to check again comes from `output` -- which is exactly the tool the
+agent would reach for."""
+cell_output(session, name) = call("output", Dict("session" => session, "cell" => name)).output
+
 "Every field the one record promises. Used as an acceptance test everywhere."
 const RECORD_FIELDS = (:status, :waited_seconds, :timestamp, :cells)
 is_record(r) = all(f -> haskey(r, f), RECORD_FIELDS) &&
@@ -316,7 +323,8 @@ end
     # Reopening the FILE gets the saved work back, cells and all.
     r2 = call("open", Dict("session" => S, "path" => path, "wait_seconds" => 120))
     @test is_record(r2)
-    @test any(c -> c.name == "kept" && c.output == "42", r2.cells)
+    @test any(c -> c.name == "kept", r2.cells)
+    @test cell_output(S, "kept") == "42"
 
     # open without a path and without create is a clear refusal, not a guess.
     @test call("open", Dict("session" => S)).error
@@ -336,7 +344,7 @@ end
                       "code" => "b = 7", "cell" => "a", "wait_seconds" => 60))
     call("edit", Dict("session" => S, "mode" => "insert",
                       "code" => "total = a * b", "cell" => "b", "wait_seconds" => 60))
-    @test call("read", Dict("session" => S, "cells" => ["total"])).cells[1].output == "42"
+    @test cell_output(S, "total") == "42"
 
     # markdown is wrapped for you
     m = call("edit", Dict("session" => S, "mode" => "insert",
@@ -347,7 +355,8 @@ end
     d = call("edit", Dict("session" => S, "cell" => only(c.cell_id for c in m.cells),
                           "mode" => "delete", "wait_seconds" => 60))
     @test is_record(d)
-    @test !any(c -> occursin("a heading", c.code), call("read", Dict("session" => S)).cells)
+    @test !any(c -> occursin("a heading", get(c, :code, "")),
+               call("read", Dict("session" => S)).cells)
 
     # replace/delete without a cell is a refusal, not a crash.
     @test call("edit", Dict("session" => S, "code" => "x = 1")).error
@@ -384,7 +393,9 @@ end
     @test !haskey(e, :deleted)
     @test occursin("delete", e.hint)
     stuck = only(c.cell_id for c in e.cells)
-    @test any(c -> c.cell_id == stuck, call("read", Dict("session" => S)).cells)
+    # An unnamed cell is named by its own id, so a compacted entry still
+    # addresses it.
+    @test any(c -> c.name == stuck, call("read", Dict("session" => S)).cells)
     call("edit", Dict("session" => S, "cell" => stuck, "mode" => "delete",
                       "wait_seconds" => 60))
     @test length(call("read", Dict("session" => S)).cells) == before
@@ -474,7 +485,11 @@ end
     r = call("read", Dict("session" => S))
     @test is_record(r)
     @test r.status == "success"
-    @test all(c -> haskey(c, :status) && haskey(c, :code) && haskey(c, :cell_id) && haskey(c, :name), r.cells)
+    # Every entry carries a name and a status, in either shape; a full one also
+    # carries the code and the id.
+    @test all(c -> haskey(c, :name) && haskey(c, :status), r.cells)
+    @test all(c -> haskey(c, :unchanged_since) || (haskey(c, :code) && haskey(c, :cell_id)),
+              r.cells)
 
     one = call("read", Dict("session" => S, "cells" => ["total"]))
     @test length(one.cells) == 1
@@ -489,6 +504,79 @@ end
 
     a = only(call("read", Dict("session" => S, "cells" => ["a"], "tree" => true)).cells)
     @test "total" in a.downstream["a"]
+end
+
+@testset "cells this session already saw compress, and since drops them" begin
+    T = "dedup"
+    call("start", Dict("session" => T))
+    opened = call("open", Dict("session" => T, "create" => true, "wait_seconds" => 120))
+    @test all(c -> haskey(c, :code), opened.cells)        # first sight: in full
+
+    ins = call("edit", Dict("session" => T, "mode" => "insert", "code" => "base = 2",
+                            "wait_seconds" => 60))
+    @test haskey(only(ins.cells), :code)                  # a new cell too
+    call("edit", Dict("session" => T, "mode" => "insert", "code" => "derived = base * 3",
+                      "wait_seconds" => 60))
+
+    # Looking again at state the session has already been given: every cell is
+    # name, status, unchanged_since and nothing else. Compressed, not hidden --
+    # the cascade stays countable.
+    again = call("read", Dict("session" => T))
+    @test length(again.cells) == 3
+    @test all(c -> haskey(c, :unchanged_since) && !haskey(c, :code), again.cells)
+    @test all(c -> c.unchanged_since <= again.timestamp, again.cells)
+
+    # A real change comes back in full, and so does the cascade it caused.
+    r = call("edit", Dict("session" => T, "cell" => "base", "code" => "base = 5",
+                          "wait_seconds" => 60))
+    changed = only(c for c in r.cells if get(c, :name, "") == "base")
+    @test get(changed, :code, "") == "base = 5"
+    cascaded = only(c for c in r.cells if get(c, :name, "") == "derived")
+    @test get(cascaded, :output, "") == "15"
+
+    # Re-running a cell to the SAME answer is not a change. Pluto allocates a
+    # fresh object and a fresh objectid; the fingerprint deliberately ignores
+    # that, because it identifies the rendered output, not the object.
+    call("run", Dict("session" => T, "cells" => ["derived"], "wait_seconds" => 60))
+    @test haskey(only(call("read", Dict("session" => T, "cells" => ["derived"])).cells),
+                 :unchanged_since)
+
+    # `since` is the same comparison shown as a delta rather than a summary.
+    # Empty is the honest answer when every record so far already delivered
+    # everything -- an `edit` hands over its cascade, so there is no backlog.
+    t = call("read", Dict("session" => T)).timestamp
+    @test isempty(call("read", Dict("session" => T, "since" => t)).cells)
+
+    # A change made OUTSIDE the tools -- what a browser patch does -- was never
+    # delivered, so it is genuinely new and arrives in full.
+    nb = P._notebook(T)
+    cell = P.resolve_cell(nb, "base")
+    cell.code = "base = 7"
+    Pluto.update_save_run!(P._session(T).session, nb, Pluto.Cell[cell]; run_async=false)
+    delta = call("read", Dict("session" => T, "since" => t))
+    @test is_record(delta)
+    @test "base" in [c.name for c in delta.cells]
+    @test all(c -> haskey(c, :code), delta.cells)         # deltas are never compact
+    @test any(c -> get(c, :old_code, "") == "base = 5" && c.new_code == "base = 7",
+              delta.cells)
+
+    call("stop", Dict("session" => T))
+    @test !any(k -> first(k) == T, keys(P.REPORTED))
+end
+
+@testset "a container that re-runs to the same value fingerprints the same" begin
+    # The objectid case, isolated: ones(5) allocates a new array every run, so a
+    # fingerprint over Pluto's raw tree body would call this changed forever.
+    T = "dedup-objectid"
+    call("start", Dict("session" => T))
+    call("open", Dict("session" => T, "create" => true, "wait_seconds" => 120))
+    call("edit", Dict("session" => T, "mode" => "insert", "code" => "vals = ones(5)",
+                      "wait_seconds" => 60))
+    call("read", Dict("session" => T, "cells" => ["vals"]))
+    call("run", Dict("session" => T, "cells" => ["vals"], "wait_seconds" => 60))
+    @test haskey(only(call("read", Dict("session" => T, "cells" => ["vals"])).cells),
+                 :unchanged_since)
+    call("stop", Dict("session" => T))
 end
 
 @testset "read: a human's browser edit comes back with old_code and new_code" begin
@@ -523,24 +611,35 @@ end
     # confirm a read sees it with no refresh step of any kind.
     nb = P._notebook(S)
     P.resolve_cell(nb, "a").code = "a = 12345"
-    @test any(c -> c.code == "a = 12345", call("read", Dict("session" => S)).cells)
+    @test any(c -> get(c, :code, "") == "a = 12345",
+              call("read", Dict("session" => S)).cells)
     P.resolve_cell(nb, "a").code = "a = 6"
     call("run", Dict("session" => S, "cells" => ["a"], "wait_seconds" => 60))
 end
 
 @testset "output rendering: sketches, not dumps" begin
-    call("edit", Dict("session" => S, "mode" => "insert",
-                      "code" => "vec = collect(1.0:100000.0)", "wait_seconds" => 60))
-    c = only(call("read", Dict("session" => S, "cells" => ["vec"])).cells)
-    @test occursin("Vector{Float64}", c.output)
-    @test occursin("elements", c.output)
-    @test !occursin("\n", c.output)              # one line for 100k elements
-    @test length(c.output) < 400
+    # The insert's own record is where the sketch appears: a later read would
+    # compact this cell, having already delivered it.
+    r = call("edit", Dict("session" => S, "mode" => "insert",
+                          "code" => "vec = collect(1.0:100000.0)", "wait_seconds" => 60))
+    sketched = only(c.output for c in r.cells if get(c, :name, "") == "vec")
+    @test occursin("Vector{Float64}", sketched)
+    @test occursin("elements", sketched)
+    @test !occursin("\n", sketched)              # one line for 100k elements
+    @test length(sketched) < 400
+
+    # `output` gives every element Pluto stored -- more than the sketch, and
+    # still not a dump of Pluto's own Dict.
+    full = cell_output(S, "vec")
+    @test occursin("Vector{Float64}", full)
+    @test length(full) > length(sketched)
+    @test !occursin("MIME type", full)
+    @test !occursin("Dict{Symbol", full)
 
     call("edit", Dict("session" => S, "mode" => "insert",
                       "code" => "tup = (x=1, y=\"two\", z=[1,2,3])", "wait_seconds" => 60))
-    t = only(call("read", Dict("session" => S, "cells" => ["tup"])).cells)
-    @test t.output == "(x = 1, y = \"two\", z = Int64[1, 2, 3])"
+    @test cell_output(S, "tup") == "(x = 1, y = \"two\", z = Int64[1, 2, 3])"
+
 end
 
 @testset "output: one cell, complete" begin
@@ -583,10 +682,20 @@ end
                       "wait_seconds" => 60))
 
     # A print blob is a log entry, and hits the same one truncation function.
-    call("edit", Dict("session" => S, "mode" => "insert",
-                      "code" => "printy = (println(\"p\"^9000); 3)", "wait_seconds" => 60))
-    pc = only(call("read", Dict("session" => S, "cells" => ["printy"])).cells)
-    @test occursin("full output:", only(pc.logs).msg)
+    r = call("edit", Dict("session" => S, "mode" => "insert",
+                          "code" => "printy = (println(\"p\"^9000); 3)", "wait_seconds" => 60))
+    # The print may not have been flushed when the edit returned; whichever
+    # record first carries it is the one to read, and a later read compacts a
+    # cell it has already delivered.
+    logs = get(only(c for c in r.cells if get(c, :name, "") == "printy"), :logs, nothing)
+    for _ in 1:150
+        logs === nothing || break
+        logs = get(only(call("read", Dict("session" => S, "cells" => ["printy"])).cells),
+                   :logs, nothing)
+        logs === nothing && sleep(0.1)
+    end
+    @test logs !== nothing
+    @test occursin("full output:", only(logs).msg)
     call("edit", Dict("session" => S, "cell" => "printy", "mode" => "delete",
                       "wait_seconds" => 60))
 
@@ -594,19 +703,21 @@ end
 end
 
 @testset "logs: structured, capped, counted" begin
-    call("edit", Dict("session" => S, "mode" => "insert",
+    r = call("edit", Dict("session" => S, "mode" => "insert",
         "code" => "noisy = begin; for i in 1:100; @info \"step\" i=i; end; println(\"done\"); 7; end",
         "wait_seconds" => 60))
     # Pluto delivers a cell's log entries on its own throttled schedule, AFTER
-    # the cell itself reports success -- so a read taken the instant a run
-    # finishes can legitimately be missing the last few. Wait for the print,
-    # which this cell emits last of all; then the window is deterministic.
-    local c
+    # the cell itself reports success, so the print this cell emits last may or
+    # may not have made the edit's own record. Whichever record first carries it
+    # is the one to read: once the logs settle, later records compact the cell.
+    settled(c) = any(l -> l.level == "Stdout", get(c, :logs, ()))
+    c = only(x for x in r.cells if get(x, :name, "") == "noisy")
     for _ in 1:150
-        c = only(call("read", Dict("session" => S, "cells" => ["noisy"])).cells)
-        any(l -> l.level == "Stdout", get(c, :logs, ())) && break
+        settled(c) && break
         sleep(0.1)
+        c = only(call("read", Dict("session" => S, "cells" => ["noisy"])).cells)
     end
+    @test settled(c)
     @test c.output == "7"
     @test length(c.logs) == P.LOGS_KEPT           # the LAST 20, not the first
     @test c.logs[1].level == "Info"
@@ -714,9 +825,9 @@ end
     @test count(n -> n.current, l) == 1
 
     # The second open is current; the first is still reachable by path.
-    @test only(call("read", Dict("session" => T, "cells" => ["which"])).cells).output == "2"
-    @test only(call("read", Dict("session" => T, "cells" => ["which"],
-                                 "notebook" => basename(one.path))).cells).output == "1"
+    @test cell_output(T, "which") == "2"
+    @test call("output", Dict("session" => T, "cell" => "which",
+                              "notebook" => basename(one.path))).output == "1"
 
     # Regression: CHANGES/SNAPSHOTS are keyed per NOTEBOOK. A shared per-session
     # log would report every cell of the other notebook as freshly deleted the

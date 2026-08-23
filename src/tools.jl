@@ -116,7 +116,7 @@ Pluto runs cells in DEPENDENCY order and allows one definition of a global per c
             _mark_seen!(name, nb.notebook_id, c.cell_id, c.code)
         end
         inject_helpers!(s.session, nb)
-        _ok(record(nb, nb.cells, finished, waited; url=notebook_url(s, nb), path=nb.path))
+        _ok(record(name, nb, nb.cells, finished, waited; url=notebook_url(s, nb), path=nb.path))
     end),
     return_type=TextContent,
 )
@@ -159,11 +159,11 @@ Open a notebook and honour `wait_seconds` over its run.
 
 `SessionActions.open`'s own `run_async=true` wraps the run in `@async`
 internally and hands back nothing to wait on, leaving busy/queued flags as the
-only completion signal -- exactly the heuristic that reports a cell which fails
-to PARSE as finished when it never ran. Doing the `@async` here, with a
-notebook_id we chose, gives both the real notebook (open registers it into
-`session.notebooks` synchronously, well before any cell runs) and `istaskdone`
-as the literal answer.
+only completion signal -- which reads "settled" for a cell that fails to PARSE,
+because such a cell never reaches running or queued at all. Doing the `@async`
+here, with a notebook_id we chose, gives both the real notebook (open registers
+it into `session.notebooks` synchronously, well before any cell runs) and
+`istaskdone` as the literal answer.
 """
 function _open_awaited(s, path::String; wait_seconds)
     notebook_id = uuid4()
@@ -224,6 +224,9 @@ No arguments: shut the whole session down — server, notebook workers, spill fi
         ref = get(args, "cell", nothing)
         if ref === nothing
             rm(spill_dir(nb); recursive=true, force=true)
+            delete!(CHANGES, (name, nb.notebook_id))
+            delete!(SNAPSHOTS, (name, nb.notebook_id))
+            delete!(REPORTED, (name, nb.notebook_id))
             path = nb.path
             s.current[] == nb.notebook_id && (s.current[] = nothing)
             Pluto.SessionActions.shutdown(s.session, nb; async=false)
@@ -243,7 +246,7 @@ No arguments: shut the whole session down — server, notebook workers, spill fi
         busy = busy_cells(nb)
         if isempty(busy)
             finished, waited, touched = wait_for_idle(nb; wait_seconds=0)
-            return _ok(record(nb, touched, finished, waited; stopped="cell",
+            return _ok(record(name, nb, touched, finished, waited; stopped="cell",
                               interrupted=nothing,
                               hint="Nothing was running, so nothing was interrupted."))
         end
@@ -252,7 +255,7 @@ No arguments: shut the whole session down — server, notebook workers, spill fi
         # stdout belongs to the JSON-RPC transport.
         Pluto.WorkspaceManager.interrupt_workspace((s.session, nb); verbose=false)
         finished, waited, touched = wait_for_idle(nb; wait_seconds=5.0)
-        _ok(record(nb, touched, finished, waited; stopped="cell",
+        _ok(record(name, nb, touched, finished, waited; stopped="cell",
                    interrupted=string(c.cell_id)))
     end),
     return_type=TextContent,
@@ -295,7 +298,7 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
             # nothing, so its globals are released and dependents re-run.
             finished, waited, touched = run_with_deadline(name, nb, Pluto.Cell[c];
                                                           wait_seconds=_wait(args))
-            _ok(record(nb, filter(x -> x.cell_id != c.cell_id, touched), finished, waited;
+            _ok(record(name, nb, filter(x -> x.cell_id != c.cell_id, touched), finished, waited;
                        deleted=string(c.cell_id)))
         elseif mode == "insert"
             # cell_id=uuid4(): Cell's default is uuid1, which is time-based --
@@ -314,7 +317,7 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
             finished, waited, touched = run_with_deadline(name, nb, Pluto.Cell[c];
                                                           wait_seconds=_wait(args),
                                                           save=!throwaway)
-            r = record(nb, touched, finished, waited)
+            r = record(name, nb, touched, finished, waited)
             # Deleted iff the status is success at RETURN time -- that is the
             # whole contract, hence the name. An errored or still-calculating
             # cell stays: the agent has to see it to act on it, and a cell that
@@ -333,7 +336,7 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
             _mark_seen!(name, nb.notebook_id, c.cell_id, code)
             finished, waited, touched = run_with_deadline(name, nb, Pluto.Cell[c];
                                                           wait_seconds=_wait(args))
-            _ok(record(nb, touched, finished, waited))
+            _ok(record(name, nb, touched, finished, waited))
         end
     end),
     return_type=TextContent,
@@ -347,6 +350,7 @@ function _remove_cell!(name, nb, c)
         delete!(nb.cells_dict, c.cell_id)
     end
     _forget_seen!(name, nb.notebook_id, c.cell_id)
+    _forget_reported!(name, nb.notebook_id, c.cell_id)
     return nothing
 end
 
@@ -365,7 +369,7 @@ The backup path, not the normal one. `edit` already saves and runs, and a human'
         name = _sess(args); nb = _nb(args)
         finished, waited, touched = run_with_deadline(name, nb, _targets(args, nb);
                                                       wait_seconds=_wait(args))
-        _ok(record(nb, touched, finished, waited))
+        _ok(record(name, nb, touched, finished, waited))
     end),
     return_type=TextContent,
 )
@@ -391,8 +395,10 @@ pluto_bond = MCPTool(
         # Passed through as-is. Pluto's own set_bond_value_pairs! runs the value
         # through transform_bond_value, the same step a browser's JS-typed
         # message goes through, and does NO string->number parsing: a browser
-        # never sends "7" for a slider, it sends the JSON number 7. Guessing
-        # here would break a text field whose content really is the digit 7.
+        # never sends "7" for a slider, it sends the JSON number 7. Nothing in a
+        # string distinguishes "the number 7, sent as a string" from "the text
+        # 7, typed into a text field", so the value's TYPE is the agent's to get
+        # right -- see the parameter description.
         nb.bonds[sym] = Pluto.BondValue(args["value"])
         finished, waited, touched = await_run(nb, Pluto.Cell[]; wait_seconds=_wait(args)) do
             # NOT run_async=true: set_bond_values_reactive forwards kwargs
@@ -401,7 +407,7 @@ pluto_bond = MCPTool(
             Pluto.set_bond_values_reactive(; session=s.session, notebook=nb,
                 bound_sym_names=Symbol[sym], run_async=false)
         end
-        _ok(record(nb, touched, finished, waited; bound=String(args["name"])))
+        _ok(record(name, nb, touched, finished, waited; bound=String(args["name"])))
     end),
     return_type=TextContent,
 )
@@ -412,12 +418,12 @@ pluto_read = MCPTool(
     name="read",
     description="""The notebook as it is right now: the same record every other tool returns, running nothing.
 
-The notebook object is read directly, so a human's browser edits are already in it. `wait_seconds` waits for the run to go idle or for a new error. `since` (a `timestamp` from an earlier record) narrows the record to what changed after it, including human edits with `old_code`/`new_code` — the review channel. `tree=true` adds the dependency graph.""",
+The notebook object is read directly, so a human's browser edits are already in it. `wait_seconds` waits for the run to go idle or for a new error. `since` (a `timestamp` from an earlier record) drops the cells you already have instead of compacting them. Human edits arrive with `old_code`/`new_code` — the review channel. `tree=true` adds the dependency graph.""",
     parameters=[
         ToolParameter(name="cells", type="array", description="Cell references to report on. $CELL_REF_DOC Omit for all of them.", required=false),
         ToolParameter(name="tree", type="boolean", description="Add each reported cell's references, and its upstream/downstream cells", required=false, default=false),
         wait_param(),
-        ToolParameter(name="since", type="number", description="A `timestamp` from an earlier record: report only cells changed or re-run after it. Copy the value, never compute it.", required=false),
+        ToolParameter(name="since", type="number", description="A `timestamp` from an earlier record: omit cells this session has already been shown unchanged, rather than listing them compactly. Copy the value, never compute it.", required=false),
         NOTEBOOK_PARAM,
         SESSION_PARAM,
     ],
@@ -426,55 +432,49 @@ The notebook object is read directly, so a human's browser edits are already in 
         finished, waited, _ = wait_for_idle(nb; wait_seconds=_wait(args))
         since = get(args, "since", nothing)
         labels = cell_labels(nb)
-        cells = haskey(args, "cells") && args["cells"] !== nothing ?
-            _targets(args, nb) : copy(nb.cells)
-
-        entries = if since === nothing
-            [cell_info(nb, c, labels) for c in cells]
-        else
-            _changed_since(name, nb, cells, labels, Float64(since))
+        cells = Vector{Any}(haskey(args, "cells") && args["cells"] !== nothing ?
+                            _targets(args, nb) : copy(nb.cells))
+        changes = _human_edits(name, nb, since)
+        # A cell the human deleted has nothing left to describe, so its entry is
+        # synthesised rather than rendered from a Cell that no longer exists.
+        live = Set(string(c.cell_id) for c in nb.cells)
+        for (id, e) in changes
+            id in live || push!(cells, merge((name=id, cell_id=id, status="success",
+                                              code="", runtime_ns=nothing,
+                                              mime="text/plain", output=""), e))
         end
-        get(args, "tree", false) == true &&
-            (entries = [merge(e, _tree_of(nb, e.cell_id, labels)) for e in entries])
-        _ok(record(nb, entries, finished, waited))
+        r = record(name, nb, cells, finished, waited; since, changes)
+        if get(args, "tree", false) == true
+            # Keyed by name, because a compacted entry carries no cell_id and
+            # the dependency graph is worth having either way -- it is a
+            # property of the notebook, not of the cell's output.
+            trees = Dict(labels[string(c.cell_id)] => _tree_of(nb, c, labels) for c in nb.cells)
+            r = merge(r, (cells = [merge(e, get(trees, e.name, NamedTuple())) for e in r.cells],))
+        end
+        _ok(r)
     end),
     return_type=TextContent,
 )
 
 """
-Cells that changed after `since`: re-run by anyone, or edited by a HUMAN in the
-browser. Human edits carry `old_code`/`new_code` from the CHANGES log, which is
-the only history the notebook itself does not hold -- our own edits marked
-themselves seen before running, so what remains is genuinely somebody else's.
-Deleted cells are reported too, and those have no cell left to describe.
+Human browser edits from the CHANGES log, as `old_code`/`new_code` to attach to
+a cell's entry. The only history the notebook itself does not hold: an edit made
+through these tools marks itself seen before running, so what is left in the log
+is genuinely somebody else's.
 """
-function _changed_since(name, nb, cells, labels, since::Float64)
+function _human_edits(name, nb, since)
     log = get(CHANGES, (String(name), nb.notebook_id), NamedTuple[])
+    cutoff = since === nothing ? -Inf : Float64(since)
     edits = Dict{String,NamedTuple}()
     for e in log
-        e.at > since || continue
+        e.at > cutoff || continue
         edits[e.cell_id] = (change=e.change, old_code=e.old_code, new_code=e.new_code)
     end
-    entries = Any[]
-    for c in cells
-        id = string(c.cell_id)
-        change = get(edits, id, nothing)
-        (change !== nothing || c.output.last_run_timestamp > since || c.running || c.queued) &&
-            push!(entries, cell_info(nb, c, labels; change))
-    end
-    live = Set(string(c.cell_id) for c in nb.cells)
-    for (id, e) in edits
-        id in live || push!(entries, (name=id, cell_id=id, status="success", code="",
-                                      runtime_ns=nothing, mime="text/plain", output="",
-                                      change=e.change, old_code=e.old_code, new_code=e.new_code))
-    end
-    entries
+    edits
 end
 
 """One cell's place in Pluto's reactivity graph, by cell name."""
-function _tree_of(nb, cell_id::AbstractString, labels)
-    c = get(nb.cells_dict, Base.UUID(cell_id), nothing)
-    c === nothing && return NamedTuple()
+function _tree_of(nb, c::Pluto.Cell, labels)
     # `topology.nodes` is an ImmutableDefaultDict: indexing an unanalysed cell
     # yields an empty node rather than throwing, and it has no 3-arg `get`.
     node = nb.topology.nodes[c]
@@ -529,13 +529,14 @@ pluto_output = MCPTool(
     return_type=Content,
 )
 
-# The record renders a structured body as a one-line sketch; `output` is where
-# the agent comes for everything, so give the whole thing rather than a longer
-# sketch of it.
+# The record renders a container as a one-line sketch, head and tail only;
+# `output` renders every element Pluto stored. That is as complete as complete
+# gets: the value itself lives in the worker, and this tool never re-executes a
+# cell to go and ask it. For more than Pluto kept, the agent writes a cell.
 _full_text(body::AbstractDict, mime::AbstractString) =
     mime == "application/vnd.pluto.parseerror+object" ? _parse_error_text(body) :
     mime == "application/vnd.pluto.stacktrace+object" ? _stacktrace_text(body) :
-    string(sketch(body), "\n", repr(body))
+    sketch(body; full=true)
 
 pluto_export = MCPTool(
     name="export",
@@ -546,11 +547,11 @@ pluto_export = MCPTool(
         SESSION_PARAM,
     ],
     handler=(args -> @safely begin
-        nb = _nb(args)
+        name = _sess(args); nb = _nb(args)
         out = get(args, "path", nothing)
         out = out === nothing ? (splitext(nb.path)[1] * ".html") : String(out)
         write(out, Pluto.generate_html(nb))
-        _ok(record(nb, nb.cells, true, 0.0; exported=out, bytes=filesize(out)))
+        _ok(record(name, nb, nb.cells, true, 0.0; exported=out, bytes=filesize(out)))
     end),
     return_type=TextContent,
 )
@@ -577,14 +578,12 @@ end
 Serve over stdio, MCP's default transport. Blocks forever reading stdin: this
 is the entry point for a client that launches the server as a subprocess.
 
-Sends host-side logging to stderr rather than redirecting stdout. Redirecting
-was tried and reverted: ModelContextProtocol.jl's `run_server_loop` writes every
-response with a bare `println(response); flush(stdout)` -- no stream argument,
-just the `stdout` global -- so `redirect_stdout(stderr)` does not shield the
-transport from stray prints, it silently redirects the JSON-RPC itself. Setting
-the global logger is the version that works: Pluto's host-side chatter goes to
-stderr, and worker (cell) output was never on stdout at all, since Malt keeps
-worker streams on private pipes.
+stdout carries JSON-RPC and nothing else. `ModelContextProtocol.jl`'s
+`run_server_loop` writes every response with a bare `println(response)`, using
+the `stdout` global, so the transport cannot be shielded by redirecting that
+global -- doing so redirects the responses themselves. The logger is the place
+to fix it: host-side Pluto chatter goes to stderr, and worker output was never
+on stdout at all, since Malt keeps worker streams on private pipes.
 """
 function run_server()
     global_logger(ConsoleLogger(stderr))
