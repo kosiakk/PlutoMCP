@@ -23,7 +23,11 @@ One vocabulary, no synonyms:
 
   wait_seconds     how long to wait, on every tool that runs or waits
   waited_seconds   the receipt for it, in the record
-  status           pending | calculating | success | error, cell and record alike
+  status           running | queued | success | error | disabled | unrun,
+                   cell and record alike
+  ran_seconds      how long a cell's last completed run took
+  running_seconds  how long the one executing now has been going
+  running_progress how far along, when the cell says so with @progress
   code             the text of a cell, everywhere (Pluto's own word)
   cell / cells     the only way to address cells: name, UUID, or unique prefix
   timestamp        server clock in the record, ISO 8601 UTC; copy it back into `since`
@@ -66,7 +70,7 @@ const NOTEBOOK_PARAM = ToolParameter(name="notebook", type="string",
     required=false)
 
 wait_param(default=DEFAULT_WAIT) = ToolParameter(name="wait_seconds", type="number",
-    description="Seconds to wait before returning the record (default $default). The record comes back on completion, on a new error, or on expiry — whichever is first. Expiry shows as status=\"calculating\"; nothing is cancelled. Pass 0 to fire and forget, and raise it for work you expect to be slow.",
+    description="Seconds to wait before returning the record (default $default). The record comes back on completion, on a new error, or on expiry — whichever is first. Expiry shows as status=\"running\"; nothing is cancelled. Pass 0 to fire and forget — a slow cell keeps going and the browser shows it, so there is rarely a reason to sit and wait.",
     required=false, default=default)
 
 # ------------------------------------------------------------------ lifecycle --
@@ -119,6 +123,10 @@ Pluto runs cells in DEPENDENCY order and allows one definition of a global per c
         # ensure, not inject: reopening an already-open notebook (a hit above)
         # has a live, already-injected worker, and the identity check is free.
         ensure_renderer!(s.session, nb)
+        # Pluto refuses to run a notebook it considers risky until a person has
+        # looked at it. Nothing else in the record explains why every cell is
+        # `unrun` and nothing is wrong, so it says so — and the next `edit`
+        # is what grants permission.
         _ok(record(nb, nb.cells, finished, waited; url=notebook_url(s, nb), path=nb.path))
     end),
     return_type=TextContent,
@@ -194,7 +202,9 @@ pluto_stop = MCPTool(
     name="stop",
     description="""Stop things, narrowing with each argument.
 
-No arguments: shut the whole session down — server, notebook workers, spill files. `notebook`: shut down that one notebook. `notebook` and `cell`: interrupt what the notebook is evaluating right now, the same as the browser's stop button. A cell cannot interrupt itself, which is why that last one is a tool.""",
+No arguments: shut the whole session down — server, notebook workers, spill files. `notebook`: shut down that one notebook. `notebook` and `cell`: interrupt what the notebook is evaluating right now, the same as the browser's stop button. A cell cannot interrupt itself, which is why that last one is a tool.
+
+An interrupted cell reports `unrun` — you asked for the stop, so its error is not news. Pluto escalates a stop that is ignored into killing the worker, and then every value in the notebook is gone: the cell says so with an `error`, and your next `edit` re-runs the notebook.""",
     parameters=[
         NOTEBOOK_PARAM,
         ToolParameter(name="cell", type="string", description="With `notebook`: interrupt this cell's evaluation instead of shutting anything down. $CELL_REF_DOC", required=false),
@@ -302,7 +312,7 @@ A deleted cell comes back in the record with `change: "deleted"`, and with its `
             _remove_cell!(nb, c)
             # Hand the removed cell to the run: the topology then sees it defines
             # nothing, so its globals are released and dependents re-run.
-            finished, waited, touched = run_with_deadline(nb, Pluto.Cell[c];
+            finished, waited, touched = run_with_deadline(nb, _run_set(nb, c, false);
                                                           wait_seconds=_wait(args))
             gone = (name=label, cell_id=string(c.cell_id), status="success",
                     change="deleted")
@@ -322,12 +332,12 @@ A deleted cell comes back in the record with `change: "deleted"`, and with its `
             # save=!throwaway is an implementation detail, not the contract:
             # skipping the intermediate write keeps a probe out of the file in
             # the common case. What the agent is promised is the deletion below.
-            finished, waited, touched = run_with_deadline(nb, Pluto.Cell[c];
+            finished, waited, touched = run_with_deadline(nb, _run_set(nb, c, false);
                                                           wait_seconds=_wait(args),
                                                           save=!throwaway)
             r = record(nb, touched, finished, waited)
             # Deleted iff the status is success at RETURN time -- that is the
-            # whole contract, hence the name. An errored or still-calculating
+            # whole contract, hence the name. An errored or still-running
             # cell stays: the agent has to see it to act on it, and a cell that
             # vanished mid-run is a worse surprise than one deleted on purpose.
             if throwaway && r.status == "success"
@@ -340,6 +350,7 @@ A deleted cell comes back in the record with `change: "deleted"`, and with its `
         end
 
         c = resolve_cell(nb, String(ref))
+        unchanged = c.code == code
         # A cell that BECOMES prose folds, the way one created as prose does.
         # Only on the transition: a cell that was already prose keeps whatever
         # fold state it has, because that state may be a human's deliberate
@@ -350,7 +361,7 @@ A deleted cell comes back in the record with `change: "deleted"`, and with its `
         _mark_code_sent!(code)
         # Identical text is how a cell is re-run: Pluto runs whatever cells it
         # is handed, changed or not, as shift-enter does.
-        finished, waited, touched = run_with_deadline(nb, Pluto.Cell[c];
+        finished, waited, touched = run_with_deadline(nb, _run_set(nb, c, unchanged);
                                                       wait_seconds=_wait(args))
         _ok(record(nb, touched, finished, waited))
     end),
@@ -438,7 +449,6 @@ The notebook object is read directly, so a human's browser edits are already in 
             # there is no `code` to report -- the entry says so by omission.
             (targeted || id in live) ||
                 push!(cells, merge((name=id, cell_id=id, status="success",
-                                    runtime_ns=nothing,
                                     mime="text/plain", output=""), e))
         end
         # Naming cells is asking to be told about them: they come back whole,
@@ -494,6 +504,34 @@ function _tree_of(nb, c::Pluto.Cell, labels)
                               if !startswith(string(r), "PlutoRunner")]),
      upstream = bylabel(Pluto.upstream_cells_map(c, nb.topology)),
      downstream = bylabel(Pluto.downstream_cells_map(c, nb.topology)))
+end
+
+"""
+    _run_set(nb, c, unchanged) -> Vector{Pluto.Cell}
+
+The cells to hand the run: this one, or all of them when the notebook has
+nothing live to run against.
+
+A dead worker leaves no choice — one cell cannot run in a workspace that holds
+nothing, so everything runs.
+
+A notebook Pluto is holding for review is different, and `unchanged` is the
+whole of it. Writing a cell back exactly as it stands says "I have read this
+and it can run": that is consent, and everything runs. Writing DIFFERENT text
+is not consent, it is the agent fixing something it did not like — so the text
+is saved and nothing runs, which is what Pluto does anyway while
+`will_run_code` is false. Sanitise every cell that worries you, then hand one
+back unchanged.
+"""
+function _run_set(nb::Pluto.Notebook, c::Pluto.Cell, unchanged::Bool)
+    s = session()
+    held = nb.process_status == Pluto.ProcessStatus.waiting_for_permission
+    if held
+        unchanged || return Pluto.Cell[c]      # saved, not run: Pluto refuses anyway
+        nb.process_status = Pluto.ProcessStatus.starting
+        return copy(nb.cells)
+    end
+    _current_worker(s.session, nb) === nothing ? copy(nb.cells) : Pluto.Cell[c]
 end
 
 """
@@ -578,8 +616,11 @@ Omit `cell` and the subject is the NOTEBOOK: `text/html` is Pluto's export — c
         bytes = _from_worker(nb, c, :render, want)
         if !(bytes isa Vector{UInt8}) || isempty(bytes)
             can = _from_worker(nb, c, :offers)
+            # The status says which: `running`/`queued` means a read would
+            # queue behind the run it was called to look at, `unrun` means
+            # there is nothing there yet.
             can isa Vector ||
-                error("could not render $label — the notebook is busy, or the cell has not run")
+                error("$label is $(cell_status(c)): there is no value to render")
             return _ok((cell=label, mime=want, shows_as=can))
         end
 
@@ -610,9 +651,11 @@ const ALL_TOOLS = [pluto_start, pluto_open, pluto_edit,
 const SERVER_DESCRIPTION = """
 Author and drive Pluto.jl notebooks: reactive, reproducible, self-contained with their own package environment. Pluto runs in-process and is called directly, so reads are always current and edits appear instantly to a human watching the browser.
 
-The loop: edit, then check `status`. `success`, proceed. `error`, read the cells and fix. `calculating`, call `read(wait_seconds=N, since=<timestamp from the record>)` — same record. Use `delete_on_success` for anything not worth keeping in the notebook: probes, docstrings, statistics, plots. Prefer `@info` with key-value pairs over `println`; structured entries survive truncation individually.
+The loop: edit, then check `status`. `success`, proceed. `error`, read the cells and fix. `running` or `queued`, the work is in flight — carry on writing cells, or call `read(wait_seconds=N, since=<timestamp from the record>)` for the same record. `unrun` means nothing is coming: an `edit` starts it. `disabled` means a person switched that cell off.
 
-Every response except `output` and `start`'s host/secret is that one record: `status, waited_seconds, timestamp, cells`, where `status` is one of `pending | calculating | success | error` at both levels.
+Use `delete_on_success` for anything not worth keeping in the notebook: probes, docstrings, statistics, plots. Prefer `@info` with key-value pairs over `println`; structured entries survive truncation individually.
+
+Every response except `output` and `start`'s host/secret is that one record: `status, waited_seconds, timestamp, cells`, where `status` is one of `running | queued | success | error | disabled | unrun` at both levels.
 """
 
 function build_server()

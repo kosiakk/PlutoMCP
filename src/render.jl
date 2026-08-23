@@ -239,9 +239,14 @@ const LOGS_KEPT = 20
 _logtext(x) = x isa Tuple && length(x) == 2 ?
     (first(x) isa AbstractDict ? sketch(first(x)) : string(first(x))) : string(x)
 
-# Pluto captures `print`/`println` as a log entry at a private level rather than
-# a separate stream. "LogLevel(-555)" tells the agent nothing; "Stdout" does.
-_loglevel(e) = (l = string(get(e, "level", "Info")); startswith(l, "LogLevel(") ? "Stdout" : l)
+# Pluto captures `print`/`println` as a log entry at its own private level
+# rather than a separate stream, and ProgressLogging.jl logs at another one.
+# "LogLevel(-555)" tells the agent nothing; "Stdout" does, and a progress
+# record is not a message at all -- it is a number, reported as
+# `running_progress` and dropped from the log.
+_loglevel(e) = (l = string(get(e, "level", "Info"));
+                l == "LogLevel(-555)" ? "Stdout" :
+                startswith(l, "LogLevel(") ? "Progress" : l)
 
 """
     render_logs(nb, c, label) -> (entries, dropped)
@@ -251,7 +256,9 @@ spills next to the cell's output when entries are dropped, so `+312 earlier
 entries` is a pointer rather than a loss.
 """
 function render_logs(nb::Pluto.Notebook, c::Pluto.Cell, label::AbstractString)
-    logs = c.logs
+    # A progress record is a number, not a message: it goes out as
+    # `running_progress`, and the same line forty times goes nowhere.
+    logs = [e for e in c.logs if !_is_progress(e)]
     isempty(logs) && return (NamedTuple[], nothing)
     # kind carries the entry's index: two oversize messages in one cell would
     # otherwise spill to the same path, and the second would silently overwrite
@@ -324,6 +331,7 @@ function cell_fingerprint(c::Pluto.Cell)
         hash(string(c.output.body), h)
     end
     for e in c.logs
+        _is_progress(e) && continue
         h = hash(_loglevel(e), h)
         h = hash(_logtext(get(e, "msg", "")), h)
         for kv in get(e, "kwargs", ())
@@ -385,6 +393,28 @@ end
 # both become one message: an agent reads a message, never a Dict dump.
 const ERROR_MIMES = Set(["application/vnd.pluto.parseerror+object",
                          "application/vnd.pluto.stacktrace+object"])
+
+"""
+    was_interrupted(c) -> Bool
+
+Whether this cell's error is the stop the agent itself asked for.
+
+`stop(notebook, cell)` interrupts the worker and the cell that was executing
+comes back errored with `InterruptException`. That is not news: the caller
+asked for it, and what is left is a cell with no result — the same place the
+cells behind it in the queue are, so it reports `unrun`.
+
+`Malt.TerminatedWorkerException` is NOT this. It means the process died, which
+Pluto's own interrupt escalates to when SIGINT is ignored (see
+`interrupt_workspace`: five in a row, the Ctrl+C trick). Every global in that
+notebook went with it, and that is worth an `error` and its message.
+"""
+function was_interrupted(c::Pluto.Cell)
+    c.errored || return false
+    b = c.output.body
+    b isa AbstractDict || return false
+    startswith(string(get(b, :msg, get(b, "msg", ""))), "InterruptException")
+end
 
 """
     _error_text(c) -> String

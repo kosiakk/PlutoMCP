@@ -24,15 +24,29 @@ Every tool that runs or waits returns the same record:
 status, waited_seconds, timestamp, cells
 ```
 
-`status` is one of `pending | calculating | success | error`
+`status` says one thing about a cell, and the same word aggregates the record:
 
-- **`calculating`** — the run is still going. Call
-  `read(wait_seconds=N, since=<the record's timestamp>)` and you get the same
-  record back, narrowed to what changed. It's safe to request using timestamps from previously returned results.
+| | | |
+|---|---|---|
+| `running` | executing now — one cell at a time | wait, or write the next cell |
+| `queued` | in this run, waiting its turn | wait |
+| `success` | it ran | — |
+| `error` | it threw, or the graph rejects it (two cells defining `a`, a cycle) | fix this cell, or the one the message names |
+| `disabled` | a person switched it off, or something upstream of it | nothing, until they switch it back |
+| `unrun` | no result and no run coming | an `edit` starts it |
+
+A `running` cell carries `running_seconds`, and `running_progress` if the code
+says so with `@progress`. Any cell that has finished a run carries
+`ran_seconds` — on a queued one that is what it took last time, which is how
+you judge whether to wait.
+
+To wait, call `read(wait_seconds=N, since=<the record's timestamp>)`: the same
+record, narrowed to what changed. Timestamps from earlier records are safe to
+send back.
 
 `wait_seconds` defaults to 0.1 so the common case comes back complete in one
 call. **Do not raise it to sit through slow work.** A first `using Plots` takes
-minutes to install and compile; blocking on it buys nothing. `calculating` is
+minutes to install and compile; blocking on it buys nothing. `running` is
 not an error and nothing was cancelled — the cell runs on, the human's browser
 shows it running, and you are free to write the cells that come next. The
 result arrives in the next record, or in `read(since=…)` when you want it.
@@ -58,6 +72,12 @@ Pluto runs cells in **dependency order**, not top to bottom, and allows **one de
   cell whose *non-reactive* input changed — a file on disk that has been
   rewritten, an RNG, an environment variable — send its text again, unchanged.
   Pluto runs whatever cell it is handed.
+- If a notebook comes back from `open` with `awaiting_permission`, Pluto
+  considers the file risky and will run nothing until someone has looked at it.
+  You are the someone: `read` it, and then edit any cell — rewriting it to
+  exactly what it already says is enough — and the whole notebook runs. The
+  same happens after a worker dies: one cell cannot run against an empty
+  workspace, so an edit re-runs everything.
 - For anything a person is meant to vary, do not re-run: use `@bind`. A bound
   variable makes the dependency reactive, so the value has a widget in the
   browser and `bond` sets it from here. `x = rand()` re-run by hand is a

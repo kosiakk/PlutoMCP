@@ -43,7 +43,7 @@ stop(notebook=nothing, cell=nothing)
 - `open`: get a notebook, running it. Pathless create gives an anonymous scratch notebook (Pluto cutename in tempdir); the description tells the agent to name kept work after the experiment. A created notebook is EMPTY — content in it is the agent's, never this package's. Every worker gets the render helper.
 - `edit`: `mode` is `replace`, `insert` (after `cell`, or append when `cell=nothing`), or `delete`. A cell whose expression is `md"…"` or `html"…"` is created folded — Pluto's own `code_folded`, persisted in the file as a `# ╟─` line. A display default made where a person would make the same one; it takes no parameter, appears in no record, and one click undoes it. Modes share every other argument, which is why one tool holds them. `delete_on_success=true`: the cell runs normally in the workspace, visible in the browser, and is deleted iff `status` is `success` at return time; otherwise it stays and the agent removes it by the returned id. With `wait_seconds=0` the server returns before witnessing success, so the flag never fires. That return-time deletion is its entire contract.
 - `run`: recompute cells (`cells=nothing` means all). Backup path only: `edit` saves and runs, human browser edits run through Pluto's UI, so `run` exists for cells whose non-reactive inputs changed (files on disk, RNG, env).
-- `read`: snapshot, dependency tree (`tree=true`), wait until nothing is `pending`/`calculating` or a new error appears, changes since a timestamp including human edits. The one status/wait/diff tool.
+- `read`: snapshot, dependency tree (`tree=true`), wait until nothing is `running`/`queued` or a new error appears, changes since a timestamp including human edits. The one status/wait/diff tool.
 - `output`: one cell — or, with no `cell`, the notebook itself (`text/html` is Pluto's export: state embedded, frontend from a CDN, so not an offline file; `text/plain` is the `.jl` source) — in the representation the caller names. `mime` is required — `image/png` (a figure, SVG rasterised on the way out), `text/plain` (the full value, past the record's one-level rule), `text/html` (a markup cell's raw markup). The record already said what the cell stored, so a tool that guesses is a tool that returns markup nobody can read. The only tool whose response is not the record.
 - `bond`: set a `@bind` variable and report the cascade.
 
@@ -64,9 +64,18 @@ Cells this session already saw, unchanged, compress to `name, status, unchanged_
 Unchanged certifies the rendered output; for sketched containers that is the summary, not the underlying data — value-level certainty is a probe cell (`hash(x)`).
 The cascade stays fully visible either way.
 
-`status` is one enum at both levels: `pending | calculating | success | error`.
-Cells carry their own; the record aggregates by one rule: any cell `error` means `error`, else any `pending` or `calculating` means `calculating`, else `success`.
-`wait_seconds=0` returns immediately with `status=calculating` and cell ids; completion is observed by the next `read`.
+`status` is one enum at both levels: `running | queued | success | error | disabled | unrun`.
+
+| | |
+|---|---|
+| `running` | executing now — one cell at a time, since Pluto runs a notebook's cells in sequence in one worker |
+| `queued` | in this run, waiting its turn |
+| `success` / `error` | it ran; `error` also covers a graph the reactivity engine rejects (two cells defining `a`, a cycle), which never ran at all |
+| `disabled` | a person switched it off, or it is downstream of one that is off — Pluto's own metadata, reported and never set |
+| `unrun` | no result and no run coming: a notebook held for review, a dead worker, a cell that never ran |
+
+`running` and `queued` are apart because "which one is this waiting on" is worth answering — Pluto's UI shows them alike and leaves you hunting for the ticking counter. Precedence at both levels, most urgent first: `error`, `running`, `queued`, `unrun`, `disabled`, `success`. Two orderings are deliberate: `queued` outranks `error`, because a cell about to re-run still carries the error from a world that no longer exists, and `disabled` outranks it for the mirror reason — nothing will revisit it.
+`wait_seconds=0` returns immediately with `status=running` and cell ids; completion is observed by the next `read`.
 Polling through the loop is the notification mechanism: no server push.
 
 Each cell entry carries: identity, `status`, `code`, runtime, rendered output, structured log entries (last 20, overflow counted and spilled), error message if any.
@@ -95,8 +104,9 @@ One rule underneath the record: **text the agent supplied never comes back**. `c
 
 ## One vocabulary
 
-- `wait_seconds` on every running tool, default 0.1; `waited_seconds` its receipt in the record. One semantics: return on completion, on new error, or on expiry, whichever comes first. Expiry shows as `status=calculating`. Fast cells converge within the default; `0` is fire-and-forget for batch authoring.
-- `status`: `pending | calculating | success | error`, the only progress vocabulary. No `finished`, no `errored` booleans anywhere.
+- `wait_seconds` on every running tool, default 0.1; `waited_seconds` its receipt in the record. One semantics: return on completion, on new error, or on expiry, whichever comes first. Expiry shows as `status=running`. Fast cells converge within the default; `0` is fire-and-forget for batch authoring.
+- `status`: `running | queued | success | error | disabled | unrun`, the only progress vocabulary. No `finished`, no `errored` booleans anywhere.
+- Durations are seconds, like `wait_seconds`, and marked by tense like `wait`/`waited`: `ran_seconds` is how long a cell's last completed run took, `running_seconds` how long the one executing now has been going, `running_progress` how far along it says it is through `@progress`.
 - `code` for cell text, everywhere, and always the cell's text as it is now. A human edit adds `old_code`; the change log is a snapshot and never overrides the live code.
 - `cell` / `cells` for addressing cells, `notebook` for addressing notebooks: name/path, UUID, or unique prefix, resolved by one shared function.
 - `timestamp` from the record round-trips into `since`. The agent copies, never computes time. The stamp is snapshot acquisition time, taken before cell state is read, assembly under the notebook lock: concurrent changes land at or after the stamp and reappear next `read`. Delivery is at-least-once; dedup makes duplicates cost one compact line. `since` is a view over the same reported-hash comparison: omit unchanged cells instead of compacting them. Never Pluto run timestamps: re-ran is not changed.
@@ -104,7 +114,7 @@ One rule underneath the record: **text the agent supplied never comes back**. `c
 ## One loop
 
 Stated once in the server description, elaborated in the plugin skill:
-edit, then check `status`: `success` proceed, `error` read the cells and fix, `calculating` call `read(wait_seconds=N, since=<timestamp>)`, same record.
+edit, then check `status`: `success` proceed, `error` read the cells and fix, `running`/`queued` carry on or call `read(wait_seconds=N, since=<timestamp>)` for the same record, `unrun` means an `edit` is what starts it.
 `delete_on_success` cells for anything not worth keeping.
 Prefer `@info` with key-value pairs over `println`: structured entries survive truncation individually, print spam loses its middle.
 
@@ -167,7 +177,7 @@ A post-mortem, so these are not reopened without new evidence. Each entry names 
 
 **A `full` parameter on `read`.** Full text for one cell is `output`'s job, and two ways to ask the same question is one too many.
 
-**`wait_seconds` defaulting to 0.** An ordinary cell finishes in milliseconds, so every edit came back `calculating` and needed a second call to learn it had already succeeded. 0.1 keeps the fire-and-forget available without making it the default.
+**`wait_seconds` defaulting to 0.** An ordinary cell finishes in milliseconds, so every edit came back `running` and needed a second call to learn it had already succeeded. 0.1 keeps the fire-and-forget available without making it the default.
 
 **A `cell_type` parameter, wrapping the agent's text in `md"""…"""` for it.** An `.ipynb` reflex: that format has typed cells, and Pluto does not. A Pluto cell is a Julia expression, and prose is the expression `md"""…"""` like any other. The parameter bought one convenience and cost a double-wrap guard, an exception in the code ledger, and a `$`-interpolation surprise in text the agent believed was literal. The agent writes Julia; this package does not edit it.
 

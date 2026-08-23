@@ -36,7 +36,7 @@ cell_output(name) = call("output", Dict("cell" => name, "mime" => "text/plain"))
 const RECORD_FIELDS = (:status, :waited_seconds, :timestamp, :cells)
 is_record(r) = all(f -> haskey(r, f), RECORD_FIELDS) &&
     !any(f -> haskey(r, f), (:finished, :errored)) &&
-    r.status in ("pending", "calculating", "success", "error")
+    r.status in ("running", "queued", "success", "error", "disabled", "unrun")
 
 # ---------------------------------------------------------------------------
 # Pure: no Pluto server, fast.
@@ -505,7 +505,7 @@ end
     # An explicit wait_seconds=0 returns before the result is in, so the flag
     # cannot fire: deletion at return time is the entire contract.
     z = call("edit", Dict("code" => "1 + 1", "delete_on_success" => true, "wait_seconds" => 0))
-    @test z.status == "calculating"
+    @test z.status in ("running", "queued")
     @test !haskey(z, :deleted)
     call("edit", Dict("cell" => only(c.cell_id for c in z.cells), "code" => "", "wait_seconds" => 60))
 end
@@ -523,6 +523,58 @@ end
     @test occursin("begin ... end", c.error)
     call("edit", Dict("cell" => String(c.cell_id), "code" => "",
                       "wait_seconds" => 60))
+end
+
+@testset "every status a cell can be in" begin
+    # The whole vocabulary, against the live surface.
+    call("edit", Dict("code" => "vocab_ok = 6 * 7", "wait_seconds" => 60))
+    entry(n) = only(c for c in call("read", Dict("cells" => [n])).cells)
+    @test entry("vocab_ok").status == "success"
+    @test entry("vocab_ok").ran_seconds > 0        # seconds, like every duration here
+
+    # error: it ran and threw.
+    e = call("edit", Dict("code" => "vocab_bad = error(\"no\")", "wait_seconds" => 60))
+    @test only(e.cells).status == "error"
+
+    # error also covers a graph the engine rejects, which never ran at all. Two
+    # cells defining `vocab_ok` puts BOTH in the record — the fix is in the
+    # other cell, which is exactly why the message names it.
+    dup = call("edit", Dict("code" => "vocab_ok = 1", "wait_seconds" => 60))
+    @test length(dup.cells) == 2
+    @test all(c -> c.status == "error", dup.cells)
+    @test any(c -> occursin("ultiple", get(c, :error, "")), dup.cells)
+    intruder = only(c for c in P._notebook().cells if c.code == "vocab_ok = 1")
+    call("edit", Dict("cell" => string(intruder.cell_id), "code" => "", "wait_seconds" => 60))
+
+    # disabled: Pluto's own metadata, the way a person sets it in the browser.
+    nb = P._notebook()
+    c = P.resolve_cell(nb, "vocab_ok")
+    c.metadata["disabled"] = true
+    Pluto.update_save_run!(P.session().session, nb, Pluto.Cell[c]; run_async=false)
+    d = entry("vocab_ok")
+    @test d.status == "disabled"
+    @test d.output == "42"                       # the last true result is still true
+    @test call("output", Dict("cell" => "vocab_ok", "mime" => "text/plain")).output == "42"
+    c.metadata["disabled"] = false
+    Pluto.update_save_run!(P.session().session, nb, Pluto.Cell[c]; run_async=false)
+
+    # running: how long so far, and how far along when the cell says so.
+    call("edit", Dict("code" => "using ProgressLogging", "wait_seconds" => 300))
+    call("edit", Dict("code" => "vocab_slow = let\n  t = 0.0\n  @progress for i in 1:60\n" *
+                                "    sleep(0.1); t += i\n  end\n  t\nend", "wait_seconds" => 0))
+    sleep(2)
+    mid = only(c for c in call("read", Dict("wait_seconds" => 0)).cells
+               if get(c, :name, "") == "vocab_slow")
+    @test mid.status == "running"
+    @test mid.running_seconds > 0
+    @test 0 < mid.running_progress < 1           # from @progress, not a log line
+    @test !haskey(mid, :output)                  # no stale result while it runs
+    @test !any(l -> occursin("Progress", get(l, :level, "")), get(mid, :logs, ()))
+
+    call("read", Dict("wait_seconds" => 60))
+    for n in ("vocab_slow", "vocab_bad", "vocab_ok")
+        call("edit", Dict("cell" => n, "code" => "", "wait_seconds" => 60))
+    end
 end
 
 @testset "errors are reported as messages, not blobs" begin
@@ -591,7 +643,7 @@ end
 @testset "short wait, then keep running" begin
     call("edit", Dict("code" => "slow = (sleep(3); 99)", "wait_seconds" => 0.2))
     r = call("read", Dict("cells" => ["slow"]))
-    @test r.status in ("calculating", "success")
+    @test r.status in ("running", "queued", "success")
 
     # read(wait_seconds=N) is the follow-up: one call, not a poll loop.
     done = call("read", Dict("cells" => ["slow"], "wait_seconds" => 30))
@@ -1043,6 +1095,46 @@ end
     end
 end
 
+@testset "a notebook held for review: sanitise, then consent" begin
+    # Pluto holds a notebook it considers risky, and while it does, NOTHING
+    # runs — will_run_code is false. The agent has had to `read` the notebook
+    # to know its cells at all, which is the review, and what it does next
+    # decides: rewrite a cell it does not like and that is a change, saved and
+    # not run; hand a cell back exactly as it stands and that is consent, and
+    # the whole notebook runs. Pluto's own banner does the same thing.
+    nb = P._notebook()
+    call("edit", Dict("code" => "held_a = 2", "wait_seconds" => 60))
+    call("edit", Dict("code" => "held_b = held_a * 3", "wait_seconds" => 60))
+    nb.process_status = Pluto.ProcessStatus.waiting_for_permission
+
+    # Every record says so, not just the one from `open`: an edit that quietly
+    # did not run is the worst thing this surface could do in silence.
+    @test call("read").awaiting_permission
+
+    sanitised = call("edit", Dict("cell" => "held_a", "code" => "held_a = 5",
+                                  "wait_seconds" => 30))
+    @test sanitised.awaiting_permission
+    @test cell_output("held_b") == "6"           # nothing ran: still the old value
+
+    consent = call("edit", Dict("cell" => "held_a", "code" => "held_a = 5",
+                                "wait_seconds" => 60))
+    @test !haskey(consent, :awaiting_permission) # the hold is over
+    @test cell_output("held_b") == "15"          # everything ran, sanitised text and all
+
+    # A dead worker is the same situation from the other direction: one cell
+    # cannot run against a workspace that holds nothing.
+    Pluto.WorkspaceManager.unmake_workspace((P.session().session, nb);
+                                            async=false, verbose=false)
+    r = call("edit", Dict("cell" => "held_b", "code" => "held_b = held_a * 3",
+                          "wait_seconds" => 120))
+    @test r.status == "success"
+    @test cell_output("held_b") == "15"          # held_a was restored first
+
+    for n in ("held_b", "held_a")
+        call("edit", Dict("cell" => n, "code" => "", "wait_seconds" => 60))
+    end
+end
+
 @testset "the render helper survives Pluto restarting the worker" begin
     # Installing a package restarts the notebook PROCESS, so `Main.PlutoMCP`
     # goes away and injecting once at `open` is not enough. `unmake_workspace`
@@ -1178,7 +1270,7 @@ end
                                        "wait_seconds" => 60)))
         r = call(name, Dict{String,Any}(args))
         @test is_record(r)
-        @test r.status in ("pending", "calculating", "success", "error")
+        @test r.status in ("running", "queued", "success", "error", "disabled", "unrun")
         # A real server clock, for `since` -- ISO 8601 UTC with milliseconds.
         @test occursin(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$", r.timestamp)
         @test r.waited_seconds >= 0

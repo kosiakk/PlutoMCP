@@ -17,9 +17,11 @@ Three consequences, and they are the whole design:
 - **Edits appear instantly in an open tab.** `Pluto.update_save_run!` calls
   Pluto's own `send_notebook_changes!`, which diffs against each client's
   snapshot and pushes patches. Pluto is already an MVC; this adds no second one.
-- **Runs report honestly.** Every call says `status: pending | calculating |
-  success | error`, and `calculating` means exactly that — not a timeout, not a
-  failure. Nothing blocks on a slow cell unless you ask it to.
+- **Runs report honestly.** Every call says `status: running | queued |
+  success | error | disabled | unrun`, and `running` means exactly that — not a
+  timeout, not a failure. A running cell says how long it has been going, and
+  how far along if the code declares it. Nothing blocks on a slow cell unless
+  you ask it to.
 
 Pluto's reactive dependency graph is used rather than guessed at: cells are
 named for what they define, and nothing here parses Julia source.
@@ -149,8 +151,8 @@ record:
             "code": "total = a * b", "mime": "text/plain", "output": "42"}]}
 ```
 
-`status` is one enum — `pending | calculating | success | error` — on cells and
-on the record alike. `cells` covers everything the reactive cascade touched,
+`status` is one enum — `running | queued | success | error | disabled | unrun` —
+on cells and on the record alike. `cells` covers everything the reactive cascade touched,
 including cells that re-ran cleanly.
 
 A cell this session has already been shown, unchanged, comes back as
@@ -184,7 +186,7 @@ Two rules hold this together:
 
 Everything that runs takes `wait_seconds` (default 0.1, and `0` to fire and
 forget). The call returns on completion, on a new error, or on expiry —
-whichever comes first. Expiry shows as `status: "calculating"`, which is
+whichever comes first. Expiry shows as `status: "running"`, which is
 neither an error nor a timeout: the cell is still going, the browser already
 shows it running, and
 

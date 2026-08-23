@@ -293,19 +293,51 @@ end
 # ------------------------------------------------------------------ reading --
 
 """
+    is_blocked(c) -> Bool
+
+Whether this cell will not run, however the notebook is driven.
+
+Pluto's own metadata: a person disables a cell in the browser, and Pluto marks
+everything downstream `depends_on_disabled_cells`. Neither runs. Reported,
+never set -- switching a cell off is a decision about someone's notebook.
+"""
+is_blocked(c::Pluto.Cell) = Pluto.is_disabled(c) || c.depends_on_disabled_cells
+
+"""
     cell_status(c) -> String
 
-One enum, `pending | calculating | success | error`, and the only progress
-vocabulary anywhere. A cell that has never run is `pending` just as a queued one
-is: from the agent's side both mean "no result yet", and a second word for the
-same fact is a second thing to reason about.
+One enum, and the only progress vocabulary anywhere:
+
+  running     executing right now -- one cell at a time, since Pluto runs a
+              notebook's cells in sequence in a single worker
+  queued      in this run, waiting its turn
+  success     it ran
+  error       it ran and threw, or the reactivity graph rejects it (two cells
+              defining `a`, a cycle) -- the message says which
+  disabled    switched off, or downstream of something switched off
+  unrun       no result and no run coming: a notebook held for review, a dead
+              worker, a cell that has never run, or one the agent interrupted.
+              An interrupt is an absence, not a failure, and the message it
+              leaves says nothing the caller did not ask for. A worker that
+              DIED is different and stays an `error`: every global went with it
+
+`running` and `queued` are separate words because "which one is this waiting
+on" is a question worth answering: Pluto's own UI shows them alike and leaves
+you hunting for the ticking counter.
+
+The order below is the precedence, and two entries in it are deliberate.
+`queued` outranks `error`: a cell waiting to re-run still carries the error
+from the run before, which describes a world that no longer exists. `disabled`
+outranks `error` for the mirror reason -- nothing is going to revisit it.
 """
 function cell_status(c::Pluto.Cell)
-    c.running && return "calculating"
-    # Queued BEFORE errored: a cell waiting to re-run carries the error from
-    # the run before, and that message belongs to a world that no longer
-    # exists. The run about to happen is what decides.
-    (c.queued || c.output.last_run_timestamp == 0) && return "pending"
+    c.running && return "running"
+    c.queued && return "queued"
+    is_blocked(c) && return "disabled"
+    # An interrupt is not a failure, it is an absence: the caller asked for the
+    # stop, and what is left is a cell with no result — the same place the
+    # cells behind it in the queue are.
+    (was_interrupted(c) || c.output.last_run_timestamp == 0) && return "unrun"
     c.errored && return "error"
     "success"
 end
@@ -313,8 +345,9 @@ end
 """
     aggregate_status(statuses, finished) -> String
 
-The record's own `status`, by the single stated rule: any `error` means
-`error`, else any `pending`/`calculating` means `calculating`, else `success`.
+The record's own `status`, by one rule: the most urgent thing any reported cell
+is doing. `error`, then `running`, then `queued`, then `unrun`, then `disabled`,
+then `success`.
 
 `finished` folds in the one thing the cells cannot say. An asynchronous run
 that has not yet touched its first cell leaves every cell looking settled, and
@@ -322,9 +355,68 @@ calling that `success` would be a lie with a receipt.
 """
 function aggregate_status(statuses, finished::Bool)
     any(==("error"), statuses) && return "error"
-    (!finished || any(s -> s in ("pending", "calculating"), statuses)) && return "calculating"
+    (!finished || any(==("running"), statuses)) && return "running"
+    for s in ("queued", "unrun", "disabled")
+        any(==(s), statuses) && return s
+    end
     "success"
 end
+
+"""
+    running_seconds(nb) -> Union{Nothing,Float64}
+
+How long the cell executing right now has been going.
+
+Pluto keeps this in its status tree, which reports each cell of a run as a
+`Business` with `started_at` and `finished_at` -- keyed by position in the run
+rather than by cell, so the one that is started and not finished IS the one
+executing. Best effort over a Pluto internal: no field, no number, and the
+record simply does not carry one.
+"""
+function running_seconds(nb::Pluto.Notebook)
+    try
+        evaluate = nb.status_tree.subtasks[:run].subtasks[:evaluate]
+        for b in values(evaluate.subtasks)
+            b.started_at === nothing || b.finished_at !== nothing && continue
+            return time() - b.started_at
+        end
+    catch
+    end
+    nothing
+end
+
+# Seconds, like every other duration here, and to three significant digits: a
+# cell that takes 12 microseconds should read 1.23e-5 rather than 0.0.
+_round_seconds(s::Nothing) = nothing
+_round_seconds(s::Real) = round(Float64(s); sigdigits=3)
+_seconds(ns::Nothing) = nothing
+_seconds(ns::Real) = round(ns / 1e9; sigdigits=3)
+
+"""
+    running_progress(c) -> Union{Nothing,Float64}
+
+The fraction a cell reports through `@progress`, if it reports one.
+
+ProgressLogging.jl logs at its own level with a `progress` keyword, which Pluto
+captures like any other log entry. As a log line it is noise -- the same
+message forty times -- and as a number it is the one thing worth knowing about
+a long run.
+"""
+function running_progress(c::Pluto.Cell)
+    for e in Iterators.reverse(c.logs)
+        for kv in get(e, "kwargs", ())
+            kv isa Tuple && length(kv) == 2 && string(first(kv)) == "progress" || continue
+            v = _logtext(last(kv))
+            v == "done" && return 1.0
+            f = tryparse(Float64, v)
+            f === nothing || return round(f; sigdigits=3)
+        end
+    end
+    nothing
+end
+
+_is_progress(e) = any(kv -> kv isa Tuple && length(kv) == 2 && string(first(kv)) == "progress",
+                      get(e, "kwargs", ()))
 
 """
     cell_info(nb, c, labels; change=nothing) -> NamedTuple
@@ -344,19 +436,30 @@ function cell_info(nb::Pluto.Notebook, c::Pluto.Cell, labels=cell_labels(nb);
     # A cell with no current result reports none. Pluto keeps the PREVIOUS
     # output on screen while a cell is queued or re-running, which is right for
     # a human watching a value blink and wrong for a reader who would take it
-    # for the answer to the code that is there now. Logs survive a `calculating`
-    # cell: Pluto clears them when the cell starts, so they belong to this run.
-    if status in ("pending", "calculating")
+    # for the answer to the code that is there now.
+    if status in ("queued", "unrun", "running")
         entry = (name = label, cell_id = string(c.cell_id), status = status)
+        # What it took last time it finished, which is what says whether to
+        # wait -- on a queued cell too.
+        status == "unrun" && return entry
+        ran = _seconds(c.runtime)
+        ran === nothing || (entry = merge(entry, (ran_seconds = ran,)))
+        status == "queued" && return entry
+        # Running: how long so far, how far along, and the logs of THIS run --
+        # Pluto clears them when the cell starts, so they are current.
+        for (k, v) in ((:running_seconds, _round_seconds(running_seconds(nb))),
+                       (:running_progress, running_progress(c)))
+            v === nothing || (entry = merge(entry, NamedTuple{(k,)}((v,))))
+        end
         logs, _ = render_logs(nb, c, label)
-        return status == "calculating" && !isempty(logs) ? merge(entry, (logs = logs,)) : entry
+        return isempty(logs) ? entry : merge(entry, (logs = logs,))
     end
     logs, dropped = render_logs(nb, c, label)
     info = merge((name = label,
                   cell_id = string(c.cell_id),
                   status = status,
                   code = c.code,
-                  runtime_ns = c.runtime),
+                  ran_seconds = _seconds(c.runtime)),
                  render_output(nb, c, label))
     isempty(logs) || (info = merge(info, (logs = logs,)))
     dropped === nothing || (info = merge(info, (logs_dropped = dropped,)))
@@ -527,11 +630,17 @@ function record(nb::Pluto.Notebook, cells, finished::Bool, waited::Real;
             (info = Base.structdiff(info, NamedTuple{(:output,)}))
         push!(entries, info)
     end
-    merge((status = aggregate_status(statuses, finished),
-           waited_seconds = round(Float64(waited); digits=2),
-           timestamp = iso_timestamp(timestamp),
-           cells = entries),
-          NamedTuple(extra))
+    base = (status = aggregate_status(statuses, finished),
+            waited_seconds = round(Float64(waited); digits=2),
+            timestamp = iso_timestamp(timestamp),
+            cells = entries)
+    # Pluto is holding this notebook for review: nothing runs, whatever is
+    # edited. Said in every record, not just the one from `open` — a read an
+    # hour later is owed the same explanation, and an edit that quietly did not
+    # run is the worst thing this surface could do silently.
+    nb.process_status == Pluto.ProcessStatus.waiting_for_permission &&
+        (base = merge(base, (awaiting_permission = true,)))
+    merge(base, NamedTuple(extra))
 end
 
 cells_info(nb::Pluto.Notebook) =
@@ -774,6 +883,25 @@ _current_worker(session, nb::Pluto.Notebook) =
     catch
         nothing  # discarded workspace, or an internal that moved: fall through and re-inject
     end
+
+"""
+    needs_full_run(session, nb) -> Bool
+
+Whether this notebook has nothing live to run a single cell against.
+
+Two ways to get there, and Pluto's answer to both is the same one its own
+"Run notebook code" banner takes (`restart_process`): run every cell.
+
+  - `waiting_for_permission` -- Pluto opened a notebook it considers risky and
+    is holding it for a human to look at. `will_run_code` is false, so an edit
+    would quietly not execute and the agent would watch `unrun` forever.
+  - no worker -- the process died, or was restarted for a package install.
+    Every global went with it, so one cell cannot be re-run against what is
+    left, because nothing is left.
+"""
+needs_full_run(session, nb::Pluto.Notebook) =
+    nb.process_status == Pluto.ProcessStatus.waiting_for_permission ||
+    _current_worker(session, nb) === nothing
 
 """
     ensure_renderer!(session, nb)
