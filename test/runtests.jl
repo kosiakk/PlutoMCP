@@ -166,8 +166,22 @@ end
     @test "b" in r.errored
     @test r.cells[1].errored
 
-    # And the cell's output carries the error, not a silent empty body.
-    @test call("output", Dict("session" => S, "cell_id" => "b")).errored
+    # The error comes back structured, not stringified into a blob.
+    out = call("output", Dict("session" => S, "cell_id" => "b"))
+    @test out.errored
+    @test out.kind == "runtime_error"
+    @test occursin("DomainError", out.message)
+    @test !isempty(out.stacktrace)
+
+    # A fresh cell with a syntax error gets its own mime, flagged separately.
+    r3 = call("edit", Dict("session" => S, "edit_mode" => "insert",
+                           "new_source" => "broken = (", "block" => 60))
+    id2 = r3.cells[1].cell_id
+    out2 = call("output", Dict("session" => S, "cell_id" => id2))
+    @test out2.errored
+    @test out2.kind == "parse_error"
+    @test !isempty(out2.diagnostics)
+    call("edit", Dict("session" => S, "cell_id" => id2, "edit_mode" => "delete"))
 
     call("edit", Dict("session" => S, "cell_id" => "b",
                       "new_source" => "b = 7", "block" => 60))

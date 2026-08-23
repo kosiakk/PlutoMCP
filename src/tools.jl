@@ -246,7 +246,7 @@ pluto_output = MCPTool(
     name="output",
     description="""One cell's output, plus its stdout/@info logs.
 
-Images come back viewable. SVG is withheld by default — a plot is ~100 KB of markup most clients cannot render inline — so call png for a picture, or pass raw=true if you genuinely want the markup.""",
+Images come back viewable. SVG is withheld by default — a plot is ~100 KB of markup most clients cannot render inline — so call png for a picture, or pass raw=true if you genuinely want the markup. An errored cell returns a structured error (`kind`: "parse_error" or "runtime_error", plus the message/diagnostics and stacktrace) instead of a stringified blob, so the agent can act on it without a browser.""",
     parameters=[
         ToolParameter(name="cell_id", type="string", description=CELL_REF_DOC, required=true),
         ToolParameter(name="raw", type="boolean", description="Return an SVG result's full markup", required=false, default=false),
@@ -256,10 +256,16 @@ Images come back viewable. SVG is withheld by default — a plot is ~100 KB of m
         nb = _notebook(_sess(args)); c = resolve_cell(nb, args["cell_id"])
         mime = string(c.output.mime); body = c.output.body
         astext(b) = b isa Vector{UInt8} ? String(copy(b)) : string(b)
-        # SVG is handled entirely here, both ways. It also matches "image/*", so
-        # letting it reach the image branch would return a picture for raw=true
-        # and never the markup that flag exists to ask for.
-        if mime == "image/svg+xml"
+        # Structured errors: Pluto already hands these back as a Dict, so pass
+        # it straight through instead of stringifying it into a blob the agent
+        # has to re-parse. Parse errors and runtime errors get their own mime,
+        # flagged separately as the issue asked.
+        if mime == "application/vnd.pluto.parseerror+object"
+            _ok((errored=true, kind="parse_error", diagnostics=body[:diagnostics], logs=c.logs))
+        elseif mime == "application/vnd.pluto.stacktrace+object"
+            _ok((errored=true, kind="runtime_error", message=body[:msg],
+                 stacktrace=body[:stacktrace], logs=c.logs))
+        elseif mime == "image/svg+xml"
             get(args, "raw", false) && return _ok((mime=mime, errored=c.errored, body=astext(body), logs=c.logs))
             n = body === nothing ? 0 : (body isa AbstractString ? sizeof(body) : length(body))
             _ok((mime=mime, errored=c.errored, bytes=n, body="<SVG withheld: $n bytes>",
