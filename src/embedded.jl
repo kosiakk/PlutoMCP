@@ -542,7 +542,7 @@ function run_cells!(name::AbstractString, nb::Pluto.Notebook, cells::Vector{Plut
     s = _session(name)
     # Cheap when nothing restarted, and the only moment we are guaranteed to be
     # asked before a cell runs.
-    ensure_helpers!(s.session, nb)
+    ensure_renderer!(s.session, nb)
     isempty(cells) || Pluto.update_save_run!(s.session, nb, cells; run_async=false, save)
     return nb
 end
@@ -594,8 +594,8 @@ function run_with_deadline(name::AbstractString, nb::Pluto.Notebook, cells::Vect
     s = _session(name)
     isempty(cells) && return (true, 0.0, Pluto.Cell[])
     # Every run funnels through here, which makes it the one place that can
-    # notice the worker was replaced under us (see ensure_helpers!).
-    ensure_helpers!(s.session, nb)
+    # notice the worker was replaced under us (see ensure_renderer!).
+    ensure_renderer!(s.session, nb)
     # Pluto's own run_async=true does exactly this -- @async around the
     # synchronous path (see maybe_async in Run.jl) -- but doesn't hand back
     # the Task, so a caller is left guessing whether a run has finished from
@@ -682,68 +682,27 @@ end
 
 _wrap_markdown(src::String) = startswith(strip(src), "md\"") ? src : "md\"\"\"\n$src\n\"\"\""
 
-# ------------------------------------------------------------- injected help --
+# --------------------------------------------------------- the render helper --
 
 #=
-`AsPNG(fig)` exists for one reason: Pluto's MIME ordering prefers SVG whenever a
-backend offers both, and MCP images are PNG. A plot cell therefore comes back as
-~100 KB of markup no client can show, when the agent wanted a picture.
+The worker side of `output`.
 
-It is injected into the WORKER, not written into the notebook, because the
-notebook is the artifact a human keeps: a helper the agent needs is not
-something the reader should have to scroll past.
+Pluto keeps a RENDERING of each cell's value, chosen by its own MIME
+preference. This is the value itself, out of `PlutoRunner.cell_results`, so
+`show` can be asked for any MIME the object supports -- which is all `output`
+ever needed. A figure answers `image/png` with a picture and `image/svg+xml`
+with the XML because that is what the object does, and this file knows nothing
+about plots.
 
-Injecting it into the current workspace module would not survive: Pluto makes a
-FRESH `Main.workspace#N` on every reactive run (`bump_workspace_module`) and
-moves the notebook's variables across, so anything defined in the old module is
-simply gone next run. The two durable places are the worker's `Main`, which is
-never bumped, and `PlutoRunner.workspace_preamble` -- the list of expressions
-Pluto evaluates inside each new workspace module, which is how `PlutoRunner`
-itself becomes visible to cells. So: define the module in `Main` once, and add
-one `using` to the preamble.
+It is injected into the WORKER, not written into the notebook: the notebook is
+the artifact a human keeps, and a helper the server needs is not something the
+reader should have to scroll past. It goes into the worker's `Main`, which
+Pluto never bumps -- unlike `Main.workspace#N`, which is rebuilt on every
+reactive run. Nothing is added to `workspace_preamble` and nothing is visible
+to cells: no cell has any reason to call this.
 =#
-const ASPNG_SOURCE = raw"""
+const RENDERER_SOURCE = raw"""
 module PlutoMCP
-
-export AsPNG
-
-# AsPNG(fig): show `fig` as a PNG, whatever its native format.
-struct AsPNG{T}
-    fig::T
-end
-
-Base.showable(::MIME"image/png", ::AsPNG) = true
-
-function Base.show(io::IO, m::MIME"image/png", p::AsPNG)
-    Base.showable(m, p.fig) && return show(io, m, p.fig)
-    # Backends that cannot show/png (Plots' plotly, say) still save one. Look
-    # the writer up in the figure's OWN module -- Plots.savefig for a
-    # Plots.Plot, Makie.save for a Figure -- which needs no knowledge of what
-    # the notebook happens to have `using`ed.
-    ws = parentmodule(typeof(p.fig))
-    path = tempname() * ".png"
-    try
-        for (name, args) in ((:savefig, (p.fig, path)), (:save, (path, p.fig)))
-            isdefined(ws, name) || continue
-            try
-                Base.invokelatest(getfield(ws, name), args...)
-                isfile(path) && return write(io, read(path))
-            catch
-            end
-        end
-        error("cannot render $(typeof(p.fig)) as PNG: it has no image/png show method, savefig or save")
-    finally
-        rm(path; force=true)
-    end
-end
-
-# ------------------------------------------------------------- by cell_id --
-#
-# PlutoRunner keeps every cell's value in `cell_results`, keyed by cell_id. That
-# is the complete thing itself, not Pluto's rendering of it -- so `output` can
-# ask the worker for the whole value instead of reassembling the summary Pluto
-# stored for its frontend. It works for a cell that defines no name, which is
-# the case a lookup by variable never could.
 
 _value(id) = getfield(Main, :PlutoRunner).cell_results[Base.UUID(id)]
 
@@ -751,33 +710,21 @@ _value(id) = getfield(Main, :PlutoRunner).cell_results[Base.UUID(id)]
 # `IOBuffer(maxsize=)` stops the write rather than the machine.
 const RENDER_CAP = 32_000_000
 
-# The same rendering, as bytes -- so the SERVER can ask for a picture on the
-# agent's behalf, without a cell and without a round trip through the agent.
-png_bytes(fig) = (io = IOBuffer(); show(io, MIME"image/png"(), AsPNG(fig)); take!(io))
-
 # Every MIME worth offering, in the order a person would try them.
 const CANDIDATES = ["text/plain", "text/html", "text/markdown", "text/latex",
                     "image/png", "image/svg+xml", "image/jpeg", "application/pdf"]
 
 # render(id, mime) -> Vector{UInt8}, or nothing if the value cannot do that MIME.
 #
-# One cell's value, shown as `mime`, exactly as Julia shows it. text/plain is
-# the display form with the REPL's elision turned off -- the most complete text
-# there is. Everything else is show(io, MIME(mime), value), the same dispatch a
-# frontend or a file writer gets: ask a figure for image/svg+xml and the answer
-# is the XML.
-#
-# image/png is the one MIME that gets help, and only because a plotting backend
-# may be able to SAVE a PNG without being able to SHOW one -- see AsPNG, which
-# exists for that and is nobody's business but this function's.
+# `show(io, MIME(mime), value)` and nothing else -- the same dispatch a frontend
+# or a file writer gets. text/plain is the display form with the REPL's elision
+# turned off, which is the most complete text there is.
 function render(id, mime::AbstractString)
     v = _value(id)
     io = IOBuffer(maxsize=RENDER_CAP)
     if mime == "text/plain"
         show(IOContext(io, :limit => false, :color => false, :compact => false),
              MIME"text/plain"(), v)
-    elseif mime == "image/png"
-        show(io, MIME"image/png"(), AsPNG(v))
     elseif showable(MIME(mime), v)
         show(io, MIME(mime), v)
     else
@@ -793,12 +740,12 @@ offers(id) = (v = _value(id);
 end
 """
 
-# Which worker process each notebook's helpers were injected into. Pluto starts
+# Which worker process each notebook's renderer was injected into. Pluto starts
 # a NEW process when the package environment changes -- `using Plots` in a cell
-# installs a package and restarts -- and the fresh process has neither
-# `Main.PlutoMCP` nor the preamble entry. Injecting once at `open` is therefore
-# not enough: the helper disappears exactly when a notebook first acquires a
-# plotting library, which is when it is about to be needed.
+# installs a package and restarts -- and the fresh process has no
+# `Main.PlutoMCP`. Injecting once at `open` is therefore not enough: the helper
+# disappears exactly when a notebook first acquires a plotting library, which is
+# when it is about to be needed.
 const INJECTED_WORKER = Dict{Base.UUID,Any}()
 
 _current_worker(session, nb::Pluto.Notebook) =
@@ -810,51 +757,42 @@ _current_worker(session, nb::Pluto.Notebook) =
     end
 
 """
-    ensure_helpers!(session, nb)
+    ensure_renderer!(session, nb)
 
-Re-inject the helpers if this notebook is running in a worker we have not
+Re-inject the renderer if this notebook is running in a worker we have not
 injected into. The check is in-process -- an identity comparison against the
 `Workspace`'s worker -- so the common case costs no round trip to the worker
 and nothing is evaluated.
 """
-function ensure_helpers!(session, nb::Pluto.Notebook)
+function ensure_renderer!(session, nb::Pluto.Notebook)
     worker = _current_worker(session, nb)
     worker !== nothing && get(INJECTED_WORKER, nb.notebook_id, nothing) === worker && return nothing
-    inject_helpers!(session, nb)
+    inject_renderer!(session, nb)
 end
 
 """
-    inject_helpers!(session, nb)
+    inject_renderer!(session, nb)
 
-Make `PlutoMCP.AsPNG` available to every cell of this notebook, now and after
-each reactive run. Best-effort: failing to add a convenience is never a reason
-to fail the `open` that asked for it.
+Define `Main.PlutoMCP` in this notebook's worker. Best-effort: failing to add a
+helper is never a reason to fail the `open` that asked for it.
 """
-function inject_helpers!(session, nb::Pluto.Notebook)
+function inject_renderer!(session, nb::Pluto.Notebook)
     try
-        Pluto.WorkspaceManager.eval_in_workspace((session, nb), Expr(:toplevel,
-            # Define it once in the worker's Main. Re-evaluating would print a
-            # "replacing module" warning and invalidate the type on every open.
+        Pluto.WorkspaceManager.eval_in_workspace((session, nb),
+            # Defined once. Re-evaluating would print a "replacing module"
+            # warning and invalidate the module on every open.
             :(isdefined(Main, :PlutoMCP) ||
-              Core.eval(Main, $(QuoteNode(Meta.parseall(ASPNG_SOURCE))))),
-            # Every future workspace module gets it, the same way PlutoRunner does.
-            :(let e = :(using Main.PlutoMCP)
-                  e in PlutoRunner.workspace_preamble ||
-                      push!(PlutoRunner.workspace_preamble, e)
-              end),
-            # ...and the one that already exists.
-            :(using Main.PlutoMCP),
-        ))
+              Core.eval(Main, $(QuoteNode(Meta.parseall(RENDERER_SOURCE))))))
         # Record only on success, and only after the eval: the workspace may
         # not have existed until eval_in_workspace made it.
         let worker = _current_worker(session, nb)
             worker === nothing || (INJECTED_WORKER[nb.notebook_id] = worker)
         end
     catch e
-        # Warned, not swallowed: a helper that silently stopped existing is
-        # found much later, as an UndefVarError in somebody's plotting cell.
-        # stderr is safe -- the JSON-RPC transport owns stdout, nothing else.
-        @warn "PlutoMCP.AsPNG could not be injected into the notebook workspace" exception=e
+        # Warned, not swallowed: a helper that silently stopped existing turns
+        # into a mystifying `output` failure much later. stderr is safe -- the
+        # JSON-RPC transport owns stdout, nothing else.
+        @warn "PlutoMCP's render helper could not be injected into the worker" exception=e
     end
     return nothing
 end

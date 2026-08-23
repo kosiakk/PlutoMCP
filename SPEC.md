@@ -86,13 +86,14 @@ Pluto already decided how a value should be summarised for someone who cannot ho
 
 **The plot is the exception on both sides, and only because MIME preference is not the agent's.** Pluto stores one rendered MIME per cell and prefers SVG whenever a backend offers both; SVG is markup no MCP client can show. So the record says `mime` and stops — a picture is not describable in words, and a byte count is a number nobody can look at — and the agent asks `output` for the form it wants.
 
-That ask is not a plot feature: `output(mime=…)` is `show(io, MIME(mime), value)`, the same dispatch a file writer gets, so a figure answers `image/png` with the picture and `image/svg+xml` with the XML, and a value that cannot do the asked-for MIME answers with the list of ones it can. `AsPNG` is the one piece of help underneath it — a plotting backend may be able to SAVE a PNG without being able to SHOW one — and it is an implementation detail of `render`. Nothing agent-facing mentions it, and nothing should: the agent asks for a MIME.
+That ask is not a plot feature: `output(mime=…)` is `show(io, MIME(mime), value)`, the same dispatch a file writer gets, so a figure answers `image/png` with the picture and `image/svg+xml` with the XML. A value that cannot do the asked-for MIME answers with `shows_as`, the list of ones it can — data, not advice. There is nothing underneath that: no conversion, no fallback, no helper. `show` is the whole mechanism.
 
 Everything else follows:
 - Text: inline up to 2 KB; larger spills to a file and the payload names the path. One door, every path.
 - Containers, structs, tables: Pluto's summary, one line, one level deep. Expanding is `output`, or a probe cell (`x[4090:4110]`).
 - HTML — a markdown or `html"…"` cell — is `mime` alone in the record. Its rendering IS the code the agent wrote, re-encoded, and its extracted text is that same prose with the formatting removed. `output` needs no case for it either: the cell's *value* is a `Markdown.MD`, which Julia prints as text on its own.
 - A cell that errored has no value to fetch, so its message comes from the structure Pluto stored. That is the only place `output` reads a rendering rather than a value.
+- A value lives in the worker, so it does not outlive it. After a restart (a package install, `stop`+`open`) the record still carries Pluto's renderings, but `output` has nothing to reach until the notebook re-runs, and says so.
 
 One rule underneath the record: **text the agent supplied never comes back**. `code` is dropped when the session already holds it, and an `output` whose text hashes into that same set of held code is dropped with it. Static markup is the case where a cell's output and its input are the same thing by construction.
 
@@ -119,8 +120,7 @@ How the agent looks at data, cheapest first:
 3. The picture, when shape is the question: `output` on the plotting cell. Vision input is billed by pixel area (~`w*h/750`), not file size — 600x400 is ~320 tokens, where the same plot as a braille canvas is ~5 KB of text and ~2000 tokens. Cheaper to see more.
 4. A text plot only when the notebook has no plotting library and the question does not justify adding one: `using UnicodePlots` writes a dependency into the notebook file that outlives the probe cell. `histogram` is the exception worth having, because it prints counts beside the bars — and `fit(Histogram, x, edges).weights` gives those counts with no package at all.
 
-The picture is `output(cell, mime="image/png")`, and any other format is the same call with another MIME — `image/svg+xml` for the XML, `application/pdf` for the PDF — because `render` is `show(io, MIME(mime), value)` and nothing more. `path=` writes it to a file at any size, so saving a figure costs no cell. A cell that defines no name is reachable like any other: `output` addresses by cell_id.
-`AsPNG` lives under `render` and is never named to the agent: it covers backends that can save a PNG but not show one.
+The picture is `output(cell, mime="image/png")`, and any other format is the same call with another MIME — `image/svg+xml` for the XML, `text/html` for a Plotly figure, `application/pdf` for the PDF — because `render` is `show(io, MIME(mime), value)` and nothing more. `path=` writes it to a file at any size, so saving a figure costs no cell. A cell that defines no name is reachable like any other: `output` addresses by cell_id.
 
 ## Safety and transport
 
@@ -149,9 +149,11 @@ A post-mortem, so these are not reopened without new evidence. Each entry names 
 
 **A second evaluation path** (`execute`, a scratchpad, a hidden REPL). A probe that runs where the human cannot see it breaks the review model, and everything it could do a cell already does. Reopen if usage logs show probes that genuinely cannot be cells.
 
-**A `png` tool that inserts, runs and deletes a probe cell.** It reimplemented `edit` in order to render a plot. `AsPNG` moves the capability into a cell, where it costs no tool.
+**A `png` tool that inserts, runs and deletes a probe cell.** It reimplemented `edit` in order to render a plot. `output(mime=…)` is the capability, and it costs no cell either.
 
-**Defining `AsPNG` in the current workspace module.** Pluto builds a fresh `Main.workspace#N` on every reactive run and moves variables across, so anything defined in the old module is gone by the next call. The durable places are the worker's `Main` and `PlutoRunner.workspace_preamble`.
+**`AsPNG`, a wrapper that rasterised a figure via `savefig` when it could not `show` a PNG.** Measured, the case does not exist: `gr` shows PNG (so the wrapper never fired) and `plotly` — the backend the code named as its motivating example — can neither show nor `savefig` one, so the wrapper did not rescue it either. What plotly CAN do is `text/html`, which plain `showable` finds and `shows_as` reports. Reopen only for a named backend where `showable(MIME"image/png", x)` is false and its own `save`/`savefig` demonstrably produces a PNG.
+
+**Defining helpers in the current workspace module.** Pluto builds a fresh `Main.workspace#N` on every reactive run, so anything defined in the old module is gone by the next call; the worker's `Main` is durable. Nothing is added to `workspace_preamble` any more either: cells never call into this package, so nothing needs to be visible to them.
 
 **Detecting completion from `running`/`queued`/timestamps.** A cell that fails to PARSE never reaches either flag, so the heuristic reports it as settled when it never ran. A `Task` and `istaskdone` are the literal answer.
 

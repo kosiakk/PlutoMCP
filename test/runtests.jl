@@ -462,7 +462,7 @@ end
                           "wait_seconds" => 60))
     @test e.status == "error"
     @test !haskey(e, :deleted)
-    @test occursin("delete", e.hint)
+    @test !haskey(e, :deleted)          # kept, and the record says so by omission
     stuck = only(c.cell_id for c in e.cells)
     # An unnamed cell is named by its own id, so a compacted entry still
     # addresses it.
@@ -904,25 +904,6 @@ end
                       "wait_seconds" => 60))
 end
 
-@testset "AsPNG is injected, and survives Pluto bumping the workspace" begin
-    r = call("edit", Dict("session" => S, "mode" => "insert",
-                          "code" => "has_helper = isdefined(PlutoMCP, :AsPNG)",
-                          "wait_seconds" => 60))
-    @test only(c.output for c in r.cells) == "true"
-
-    # Pluto makes a fresh Main.workspace#N on every reactive run, so a helper
-    # defined only in the old module would be gone by the next call. This is
-    # the regression: a SECOND run must still see it.
-    r2 = call("edit", Dict("session" => S, "mode" => "insert",
-                           "code" => "helper_type = string(PlutoMCP.AsPNG)",
-                           "wait_seconds" => 60))
-    @test occursin("AsPNG", only(c.output for c in r2.cells))
-    for n in ("has_helper", "helper_type")
-        call("edit", Dict("session" => S, "cell" => n, "mode" => "delete",
-                          "wait_seconds" => 60))
-    end
-end
-
 @testset "output renders whatever MIME the value supports" begin
     # A Plots figure stores SVG, which no MCP client can show. Handing back a
     # screenful of <path d="..."> is not a smaller version of the picture, it
@@ -938,13 +919,12 @@ end
                            "code" => "svgfig = TinySVG()"))
     @test only(c.mime for c in r0.cells if c.name == "svgfig") == "image/svg+xml"
 
-    # TinySVG cannot show as PNG and has no savefig, so rendering declines and
-    # the hint is what is left -- naming the cell, so it can be run as printed.
+    # TinySVG cannot show as PNG, so `output` says so by listing what it can be.
     r = call("output", Dict("session" => S, "cell" => "svgfig", "mime" => "image/png"))
     @test !occursin("<path", string(r))          # not one screenful of it, either
-    # It cannot be a PNG, so the answer says what it can be -- no guessing, and
-    # no advice about helpers the agent should never have to know about.
-    @test occursin("image/svg+xml", r.hint)
+    # It cannot be a PNG, so the answer is what it CAN be -- data, not advice.
+    @test "image/svg+xml" in r.shows_as
+    @test "text/plain" in r.shows_as        # everything can be text/plain
     @test !occursin("AsPNG", string(r))
 
     # ...and asking for what it CAN do returns the XML, because render is just
@@ -990,23 +970,26 @@ end
     end
 end
 
-@testset "AsPNG survives Pluto restarting the worker process" begin
-    # Installing a package restarts the notebook PROCESS, not just the
-    # workspace module -- so `Main.PlutoMCP` and the preamble entry both go
-    # away, and injecting once at `open` is not enough. `unmake_workspace`
+@testset "the render helper survives Pluto restarting the worker" begin
+    # Installing a package restarts the notebook PROCESS, so `Main.PlutoMCP`
+    # goes away and injecting once at `open` is not enough. `unmake_workspace`
     # is that restart, without the minutes a real Pkg install would cost.
     nb = P._notebook(S)
     old_worker = Pluto.WorkspaceManager.get_workspace((P._session(S).session, nb)).worker
     Pluto.WorkspaceManager.unmake_workspace((P._session(S).session, nb); async=false, verbose=false)
     @test !Pluto.Malt.isrunning(old_worker)
 
-    r = call("edit", Dict("session" => S, "mode" => "insert",
-                          "code" => "helper_after_restart = string(PlutoMCP.AsPNG)",
-                          "wait_seconds" => 120))
-    # A restart re-runs the whole notebook, so the record is every cell, not one.
-    @test occursin("AsPNG", only(c.output for c in r.cells if c.name == "helper_after_restart"))
-    call("edit", Dict("session" => S, "cell" => "helper_after_restart",
-                      "mode" => "delete", "wait_seconds" => 60))
+    # A value lives in the worker, so a restart destroys every one of them:
+    # until something re-runs, `output` has nothing to reach and says so. The
+    # record is unaffected -- Pluto's stored renderings outlive the process.
+    call("read", Dict("session" => S, "wait_seconds" => 120))
+    @test call("output", Dict("session" => S, "cell" => "total",
+                              "mime" => "text/plain")).error
+
+    # Re-run, and `output` answers again -- which takes the render helper in
+    # the NEW process, injected on demand.
+    call("run", Dict("session" => S, "wait_seconds" => 120))
+    @test cell_output(S, "total") == "42"
 end
 
 @testset "bond: set slider/widget values" begin

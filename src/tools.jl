@@ -128,7 +128,7 @@ Pluto runs cells in DEPENDENCY order and allows one definition of a global per c
         end
         # ensure, not inject: reopening an already-open notebook (a hit above)
         # has a live, already-injected worker, and the identity check is free.
-        ensure_helpers!(s.session, nb)
+        ensure_renderer!(s.session, nb)
         _ok(record(name, nb, nb.cells, finished, waited; url=notebook_url(s, nb), path=nb.path))
     end),
     return_type=TextContent,
@@ -261,8 +261,7 @@ No arguments: shut the whole session down — server, notebook workers, spill fi
         if isempty(busy)
             finished, waited, touched = wait_for_idle(nb; wait_seconds=0)
             return _ok(record(name, nb, touched, finished, waited; stopped="cell",
-                              interrupted=nothing,
-                              hint="Nothing was running, so nothing was interrupted."))
+                              interrupted=nothing))
         end
         nb.wants_to_interrupt = true
         # verbose=false: Pluto's own version println()s its progress, and
@@ -345,8 +344,6 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
                 _remove_cell!(name, nb, c)
                 Pluto.update_save_run!(s.session, nb, Pluto.Cell[c]; run_async=false, save=false)
                 r = merge(r, (deleted=gone,))
-            elseif throwaway
-                r = merge(r, (hint="status is \"$(r.status)\", so the cell was kept — delete it with edit(mode=\"delete\", cell=\"$(c.cell_id)\") once you have read it.",))
             end
             _ok(r)
         else
@@ -535,7 +532,7 @@ either into a message; neither is worth failing over.
 function _from_worker(session_name, nb::Pluto.Notebook, c::Pluto.Cell, call::Symbol, extra...)
     isempty(busy_cells(nb)) || return nothing
     s = _session(session_name)
-    ensure_helpers!(s.session, nb)
+    ensure_renderer!(s.session, nb)
     try
         Pluto.WorkspaceManager.eval_fetch_in_workspace((s.session, nb),
             :(Main.PlutoMCP.$call($(string(c.cell_id)), $(extra...))))
@@ -578,10 +575,9 @@ pluto_output = MCPTool(
         bytes = _from_worker(_sess(args), nb, c, :render, want)
         if !(bytes isa Vector{UInt8}) || isempty(bytes)
             can = _from_worker(_sess(args), nb, c, :offers)
-            return _ok((cell=label, mime=string(c.output.mime),
-                        hint = can isa Vector ?
-                            "$label cannot be shown as $want. It can be: $(join(can, ", "))." :
-                            "Could not render $label — the notebook is busy, or the cell has not run."))
+            can isa Vector ||
+                error("could not render $label — the notebook is busy, or the cell has not run")
+            return _ok((cell=label, mime=want, shows_as=can))
         end
 
         if dest !== nothing
