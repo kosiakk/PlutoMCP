@@ -253,53 +253,72 @@ No arguments: shut the whole session down — server, notebook workers, spill fi
 
 pluto_edit = MCPTool(
     name="edit",
-    description="""Write the notebook: insert, replace or delete a cell, save, and run it.
+    description="""Write the notebook. What you pass says what happens:
 
-`code` is Julia, always — prose is a cell whose expression is `md\"\"\"…\"\"\"`, the same as any other. There are no cell types.
+    code, no cell     a new cell, at the end
+    cell + code       that cell's text becomes this
+    cell + code ""    the cell is deleted
 
-Editing one cell re-runs whatever depends on it, so a small edit can be a large run; the record lists every cell the cascade touched.
+`code` is Julia, always — prose is a cell whose expression is `md\"\"\"…\"\"\"`. There are no cell types, and there is no order to manage: Pluto runs cells by dependency, not by position.
 
-`delete_on_success=true` (insert only) deletes the cell again if its status is `success` when the call returns — the way to probe a value, read a docstring, compute a statistic or render a plot without leaving anything behind. It runs normally and is visible in the browser while it does. If it errors, or if `wait_seconds` expired before the result was in, the cell stays and you delete it by the returned id.""",
+Editing one cell re-runs whatever depends on it, so a small edit can be a large run; the record lists every cell the cascade touched. There is no separate run tool. Sending a cell's text again runs it again, unchanged or not, which is all that is left for the inputs reactivity cannot see — a file on disk, an RNG, an environment variable.
+
+A deleted cell comes back in the record with `change: "deleted"`, and with its `old_code` if you were not the one who wrote it — so a delete you did not mean is one edit away from undone, and nobody has to be asked "are you sure".
+
+`delete_on_success=true` (new cells only) deletes the cell again if its status is `success` when the call returns — the way to probe a value, read a docstring, compute a statistic or render a plot without leaving anything behind. It runs normally and is visible in the browser while it does. If it errors, or if `wait_seconds` expired before the result was in, the cell stays and you delete it by the returned id.""",
     parameters=[
-        ToolParameter(name="cell", type="string", description="Target cell. $CELL_REF_DOC For insert, the cell to insert AFTER; omit to append at the end.", required=false),
-        ToolParameter(name="code", type="string", description="New cell text (ignored for mode=delete)", required=false),
-        ToolParameter(name="mode", type="string", description="\"replace\", \"insert\" or \"delete\"", required=false, default="replace"),
-        ToolParameter(name="delete_on_success", type="boolean", description="Delete the cell again if it reaches status=\"success\" before this call returns (default false; insert only)", required=false, default=false),
+        ToolParameter(name="cell", type="string", description="The cell to act on. $CELL_REF_DOC Omit to add a new cell at the end.", required=false),
+        # NO default. The MCP layer fills a declared default in for an absent
+        # parameter, and absence is what says "delete" here.
+        ToolParameter(name="code", type="string", description="The cell's text. Empty deletes the cell. Sending a cell's existing text again runs it again.", required=true),
+        ToolParameter(name="delete_on_success", type="boolean", description="Delete the cell again if it reaches status=\"success\" before this call returns (default false; new cells only)", required=false, default=false),
         wait_param(),
         NOTEBOOK_PARAM,
     ],
     handler=(args -> @safely begin
         s = session(); nb = _nb(args)
-        mode = get(args, "mode", "replace")
-        code = String(something(get(args, "code", nothing), ""))
         ref = get(args, "cell", nothing)
         throwaway = get(args, "delete_on_success", false) == true
+        # `code` is always given: what happens is decided by whether a cell is
+        # named and whether the text is empty. Empty means "there should be no
+        # cell" -- an empty cell means nothing, so the token is free for the
+        # operation that does. Not JSON null: the published schema types `code`
+        # as a string, and a model asked for null sends the four characters
+        # "null" instead, measured rather than guessed.
+        haskey(args, "code") && args["code"] !== nothing ||
+            error("code is required: the cell's text, or \"\" to delete it")
+        code = String(args["code"])
 
-        mode != "insert" && ref === nothing &&
-            error("mode=\"$mode\" needs a cell to act on")
-
-        if mode == "delete"
+        if isempty(code)
+            ref === nothing && error("a new cell needs code")
             c = resolve_cell(nb, String(ref))
-            # A label exists only while the cell does, and a UUID is not what
-            # the agent called the cell -- so name it before removing it.
-            gone = cell_labels(nb)[string(c.cell_id)]
+            # Name and text before removal: a label exists only while the cell
+            # does, and handing the code back is what makes a mistaken delete
+            # something the agent can undo from this same record.
+            label = cell_labels(nb)[string(c.cell_id)]
+            # The text comes back only if the agent does not already hold it.
+            # An undo needs the code; an agent that wrote the cell has it.
+            old_code = hash(c.code) in CODE_SENT ? nothing : c.code
             _remove_cell!(nb, c)
             # Hand the removed cell to the run: the topology then sees it defines
             # nothing, so its globals are released and dependents re-run.
             finished, waited, touched = run_with_deadline(nb, Pluto.Cell[c];
                                                           wait_seconds=_wait(args))
-            _ok(record(nb, filter(x -> x.cell_id != c.cell_id, touched), finished, waited;
-                       deleted=gone))
-        elseif mode == "insert"
+            gone = (name=label, cell_id=string(c.cell_id), status="success",
+                    change="deleted")
+            old_code === nothing || (gone = merge(gone, (old_code=old_code,)))
+            return _ok(record(nb, Any[gone; filter(x -> x.cell_id != c.cell_id, touched)],
+                              finished, waited))
+        end
+
+        if ref === nothing
             c = new_cell(code)
-            at = ref === nothing ? length(nb.cell_order) :
-                 findfirst(==(resolve_cell(nb, String(ref)).cell_id), nb.cell_order)
             Pluto.withtoken(nb.executetoken) do
-                insert!(nb.cell_order, at + 1, c.cell_id)
+                push!(nb.cell_order, c.cell_id)
                 nb.cells_dict[c.cell_id] = c
             end
-            _mark_seen!(nb.notebook_id, c.cell_id, code)
-            _mark_code_sent!(code)
+            _mark_seen!(nb.notebook_id, c.cell_id, c.code)
+            _mark_code_sent!(c.code)
             # save=!throwaway is an implementation detail, not the contract:
             # skipping the intermediate write keeps a probe out of the file in
             # the common case. What the agent is promised is the deletion below.
@@ -312,26 +331,28 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
             # cell stays: the agent has to see it to act on it, and a cell that
             # vanished mid-run is a worse surprise than one deleted on purpose.
             if throwaway && r.status == "success"
-                gone = cell_labels(nb)[string(c.cell_id)]
+                label = cell_labels(nb)[string(c.cell_id)]
                 _remove_cell!(nb, c)
                 Pluto.update_save_run!(s.session, nb, Pluto.Cell[c]; run_async=false, save=false)
-                r = merge(r, (deleted=gone,))
+                r = merge(r, (deleted=label,))
             end
-            _ok(r)
-        else
-            c = resolve_cell(nb, String(ref))
-            # A cell that BECOMES prose folds, the way one created as prose
-            # does. Only on the transition: a cell that was already prose keeps
-            # whatever fold state it has, because that state may be a human's
-            # deliberate choice to read the source while the agent edits it.
-            is_prose(code) && !is_prose(c.code) && (c.code_folded = true)
-            c.code = code
-            _mark_seen!(nb.notebook_id, c.cell_id, code)
-            _mark_code_sent!(code)
-            finished, waited, touched = run_with_deadline(nb, Pluto.Cell[c];
-                                                          wait_seconds=_wait(args))
-            _ok(record(nb, touched, finished, waited))
+            return _ok(r)
         end
+
+        c = resolve_cell(nb, String(ref))
+        # A cell that BECOMES prose folds, the way one created as prose does.
+        # Only on the transition: a cell that was already prose keeps whatever
+        # fold state it has, because that state may be a human's deliberate
+        # choice to read the source while the agent edits it.
+        is_prose(code) && !is_prose(c.code) && (c.code_folded = true)
+        c.code = code
+        _mark_seen!(nb.notebook_id, c.cell_id, code)
+        _mark_code_sent!(code)
+        # Identical text is how a cell is re-run: Pluto runs whatever cells it
+        # is handed, changed or not, as shift-enter does.
+        finished, waited, touched = run_with_deadline(nb, Pluto.Cell[c];
+                                                      wait_seconds=_wait(args))
+        _ok(record(nb, touched, finished, waited))
     end),
     return_type=TextContent,
 )
@@ -347,25 +368,6 @@ function _remove_cell!(nb, c)
     _forget_reported!(c.cell_id)
     return nothing
 end
-
-pluto_run = MCPTool(
-    name="run",
-    description="""Recompute cells whose NON-reactive inputs changed: a file on disk, an RNG, an environment variable.
-
-The backup path, not the normal one. `edit` already saves and runs, and a human's browser edits run through Pluto's own UI, so reactivity covers everything that depends on the notebook's own code.""",
-    parameters=[
-        ToolParameter(name="cells", type="array", description="Cell references. $CELL_REF_DOC Omit to recompute everything.", required=false),
-        wait_param(),
-        NOTEBOOK_PARAM,
-    ],
-    handler=(args -> @safely begin
-        nb = _nb(args)
-        finished, waited, touched = run_with_deadline(nb, _targets(args, nb);
-                                                      wait_seconds=_wait(args))
-        _ok(record(nb, touched, finished, waited))
-    end),
-    return_type=TextContent,
-)
 
 pluto_bond = MCPTool(
     name="bond",
@@ -462,9 +464,15 @@ is genuinely somebody else's.
 """
 function _human_edits(nb, since)
     cutoff = something(parse_timestamp(since), -Inf)
+    # Text the agent holds is not news, however it got there. A human who typed
+    # over a cell and typed it back has ended where the agent already is —
+    # Pluto's own Run button disappears in exactly that case — so there is
+    # nothing to report.
+    held(id) = (c = get(nb.cells_dict, id, nothing); c !== nothing && hash(c.code) in CODE_SENT)
     edits = Dict{String,NamedTuple}()
     for e in CHANGES
         e.notebook_id == nb.notebook_id && e.at > cutoff || continue
+        e.change == "edited" && held(Base.UUID(e.cell_id)) && continue
         # `old_code` only. The log is a snapshot from when the event fired, and
         # the cell may have moved on since; the record's `code` is the cell's
         # text as it is NOW, and a stale entry must not override it.
@@ -596,7 +604,7 @@ Omit `cell` and the subject is the NOTEBOOK: `text/html` is Pluto's export — c
     return_type=Content,
 )
 
-const ALL_TOOLS = [pluto_start, pluto_open, pluto_edit, pluto_run,
+const ALL_TOOLS = [pluto_start, pluto_open, pluto_edit,
                    pluto_read, pluto_output, pluto_bond, pluto_stop]
 
 const SERVER_DESCRIPTION = """

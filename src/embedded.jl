@@ -301,9 +301,12 @@ is: from the agent's side both mean "no result yet", and a second word for the
 same fact is a second thing to reason about.
 """
 function cell_status(c::Pluto.Cell)
-    c.errored && return "error"
     c.running && return "calculating"
+    # Queued BEFORE errored: a cell waiting to re-run carries the error from
+    # the run before, and that message belongs to a world that no longer
+    # exists. The run about to happen is what decides.
     (c.queued || c.output.last_run_timestamp == 0) && return "pending"
+    c.errored && return "error"
     "success"
 end
 
@@ -337,10 +340,21 @@ a record ever says that the notebook itself does not.
 function cell_info(nb::Pluto.Notebook, c::Pluto.Cell, labels=cell_labels(nb);
                    change::Union{Nothing,NamedTuple}=nothing)
     label = labels[string(c.cell_id)]
+    status = cell_status(c)
+    # A cell with no current result reports none. Pluto keeps the PREVIOUS
+    # output on screen while a cell is queued or re-running, which is right for
+    # a human watching a value blink and wrong for a reader who would take it
+    # for the answer to the code that is there now. Logs survive a `calculating`
+    # cell: Pluto clears them when the cell starts, so they belong to this run.
+    if status in ("pending", "calculating")
+        entry = (name = label, cell_id = string(c.cell_id), status = status)
+        logs, _ = render_logs(nb, c, label)
+        return status == "calculating" && !isempty(logs) ? merge(entry, (logs = logs,)) : entry
+    end
     logs, dropped = render_logs(nb, c, label)
     info = merge((name = label,
                   cell_id = string(c.cell_id),
-                  status = cell_status(c),
+                  status = status,
                   code = c.code,
                   runtime_ns = c.runtime),
                  render_output(nb, c, label))

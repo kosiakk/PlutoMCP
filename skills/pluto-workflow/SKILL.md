@@ -54,8 +54,14 @@ Pluto runs cells in **dependency order**, not top to bottom, and allows **one de
 - Dependencies install themselves. Write `using DataFrames` in a cell; Pluto
   resolves it into an environment scoped to this notebook and records the
   versions inside the notebook file. No `Pkg.add`, no restart.
-- `edit` saves and runs. `run` is the backup path, for cells whose *non-reactive*
-  inputs changed — a file on disk, an RNG, an environment variable.
+- `edit` saves and runs, and that is the only way anything runs. To recompute a
+  cell whose *non-reactive* input changed — a file on disk that has been
+  rewritten, an RNG, an environment variable — send its text again, unchanged.
+  Pluto runs whatever cell it is handed.
+- For anything a person is meant to vary, do not re-run: use `@bind`. A bound
+  variable makes the dependency reactive, so the value has a widget in the
+  browser and `bond` sets it from here. `x = rand()` re-run by hand is a
+  parameter you have hidden from the human reading the notebook.
 
 ## Throwaway cells
 

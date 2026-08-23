@@ -177,6 +177,10 @@ A post-mortem, so these are not reopened without new evidence. Each entry names 
 
 **An `export` tool.** A notebook rendered as `text/html` is Pluto's export and as `text/plain` is its `.jl` source, so `output` with no `cell` covers it. A separate tool was a second way to ask one question.
 
+**Staging (`run=false`), so several edits can be made before any of them runs.** It needs a state Pluto does not have — code written but not run — and therefore a fifth status word, invalidation of every result downstream, and a way to say "no result, and none coming". Pluto's own server has no such state because the unsent text lives in the browser.
+
+**A batch `edits` parameter, applying several edits in one reactive run.** The case is real and structural: with `A → C ← B`, both parents changing, whichever edit goes first re-runs C against a half-updated world, and no ordering avoids it. It is still a corner: one wasted run of C, against a nested parameter on the 95% of calls that edit one cell. A live run made 56 edits, every one of them single. Reopen if a usage log shows the wasted runs actually costing something.
+
 **Cell names as identity.** Names are addressing convenience, taken from Pluto's reactivity graph; the UUID is the identity and is always accepted. A cell that stops parsing loses its name, and an identity that disappears when the code breaks is not an identity.
 
 **`uuid1` for new cells,** which is `Pluto.Cell`'s own default. It is time-based, so cells created in one tick share a long leading run of digits and a short prefix identifies nothing. `uuid4` keeps prefixes discriminating.
