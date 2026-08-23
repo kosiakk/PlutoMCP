@@ -276,44 +276,65 @@ creates gets a uuid4 id (see notebook_source and edit's insert path),
 picked precisely so a short prefix stays discriminating -- unlike Cell's
 own default, uuid1, which is time-based and collides in exactly that case.
 """
-function resolve_cell(nb::Pluto.Notebook, ref::AbstractString)
+function resolve_cells(nb::Pluto.Notebook, ref::AbstractString)
     for c in nb.cells
-        string(c.cell_id) == ref && return c
+        string(c.cell_id) == ref && return Pluto.Cell[c]
     end
-    labels = cell_labels(nb)
-    for c in nb.cells
-        labels[string(c.cell_id)] == ref && return c
-    end
-    # Any OTHER name the cell declares. A variable is assigned in exactly one
-    # cell -- two is the MultipleDefinitionsError -- so a name identifies its
-    # cell whether or not it is the one we chose to display. `a, b = 1, 2` is
-    # reachable as `b`, and so is any method of a function defined here.
-    hits = [c for c in nb.cells if ref in declarations(nb, c)]
-    length(hits) == 1 && return only(hits)
-    length(hits) > 1 &&
-        error("\"$ref\" is defined in $(length(hits)) cells — the notebook has a " *
-              "multiple-definition error; address them by id")
+    # Every cell that declares this name. Usually one, because a variable is
+    # assigned in exactly one cell -- but a function's methods may be spread
+    # across cells (`f(x::Int)` here, `f(x::String)` there), and two cells
+    # assigning the same global is the MultipleDefinitionsError, where seeing
+    # both IS the diagnosis.
+    decls = declarations(nb)
+    hits = [c for c in nb.cells if ref in decls[string(c.cell_id)]]
+    isempty(hits) || return hits
     hits = [c for c in nb.cells if startswith(string(c.cell_id), ref)]
-    length(hits) == 1 && return only(hits)
+    length(hits) == 1 && return hits
     length(hits) > 1 && error("\"$ref\" is ambiguous — it matches $(length(hits)) cells")
     error("no cell named or identified by \"$ref\"")
 end
 
 """
+    resolve_cell(nb, ref) -> Pluto.Cell
+
+The one cell `ref` names, for the tools that write to it.
+
+`read` takes every cell a name resolves to; writing needs exactly one, so a
+name that several cells declare is a refusal here rather than a guess.
+"""
+function resolve_cell(nb::Pluto.Notebook, ref::AbstractString)
+    cells = resolve_cells(nb, ref)
+    length(cells) == 1 && return only(cells)
+    error("\"$ref\" is declared in $(length(cells)) cells — name the one you mean by its id")
+end
+
+"""
+    declarations(nb) -> Dict(cell_id => names)
     declarations(nb, c) -> Vector{String}
 
-Every name this cell declares: globals it assigns, and functions it defines.
+Every name each cell declares: globals it assigns, and functions it defines.
 
 Pluto's reactivity graph again, never the source. `cell_labels` picks ONE of
 these to show, because a cell needs a name a reader can hold on to; this is the
-whole set, because a cell that defines `a, b` answers to both.
+whole set, because a cell defining `a, b` answers to both.
+
+Computed for the whole notebook at once: `updated_topology` reuses its analysis
+for every cell whose source has not changed, and asking cell by cell would
+throw that away N times over.
 """
-function declarations(nb::Pluto.Notebook, c::Pluto.Cell)
-    node = Pluto.updated_topology(nb.topology, nb, nb.cells).nodes[c]
-    names = String[string(d) for d in node.definitions]
-    append!(names, String[string(f) for f in node.funcdefs_without_signatures])
-    unique!(names)
+function declarations(nb::Pluto.Notebook)
+    top = Pluto.updated_topology(nb.topology, nb, nb.cells)
+    out = Dict{String,Vector{String}}()
+    for c in nb.cells
+        node = top.nodes[c]
+        names = String[string(d) for d in node.definitions]
+        append!(names, String[string(f) for f in node.funcdefs_without_signatures])
+        out[string(c.cell_id)] = unique!(names)
+    end
+    out
 end
+
+declarations(nb::Pluto.Notebook, c::Pluto.Cell) = declarations(nb)[string(c.cell_id)]
 
 # ------------------------------------------------------------------ reading --
 

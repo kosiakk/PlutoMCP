@@ -591,6 +591,29 @@ end
     end
 end
 
+@testset "a function spread across cells reads as all of them" begin
+    # Pluto lets a function's methods live in different cells, so `f` honestly
+    # has two defining cells. Reading it reports both, each with its own id;
+    # writing to it is refused, because a write needs exactly one target.
+    call("edit", Dict("code" => "spread(x::Int) = x + 1", "wait_seconds" => 60))
+    call("edit", Dict("code" => "spread(x::String) = x * \"!\"", "wait_seconds" => 60))
+
+    r = call("read", Dict("cells" => ["spread"]))
+    @test length(r.cells) == 2
+    @test all(c -> haskey(c, :cell_id), r.cells)            # addressable individually
+    @test Set(c.code for c in r.cells) ==
+          Set(["spread(x::Int) = x + 1", "spread(x::String) = x * \"!\""])
+
+    e = call("edit", Dict("cell" => "spread", "code" => "spread(x::Int) = x + 2",
+                          "wait_seconds" => 60))
+    @test e.error && occursin("2 cells", e.message)
+
+    # By id it is unambiguous, and that is what the refusal told you to do.
+    for c in r.cells
+        call("edit", Dict("cell" => String(c.cell_id), "code" => "", "wait_seconds" => 60))
+    end
+end
+
 @testset "errors are reported as messages, not blobs" begin
     r = call("edit", Dict("code" => "broken = (", "wait_seconds" => 60))
     c = only(r.cells)

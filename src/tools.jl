@@ -56,11 +56,21 @@ const DEFAULT_WAIT = 0.1
 _wait(args, default=DEFAULT_WAIT) = Float64(something(get(args, "wait_seconds", default), default))
 _nb(args) = _notebook(; ref=get(args, "notebook", nothing))
 
-"""Resolve the `cells` argument, or the whole notebook when it is absent."""
+"""
+Resolve the `cells` argument, or the whole notebook when it is absent.
+
+A name may answer for several cells -- a function whose methods are spread
+across them -- and `read` reports all of them: asking about `f` and being told
+about one of its two methods would be worse than verbose.
+"""
 function _targets(args, nb, key="cells")
     v = get(args, key, nothing)
     v === nothing && return copy(nb.cells)
-    Pluto.Cell[resolve_cell(nb, String(r)) for r in v]
+    out = Pluto.Cell[]
+    for r in v, c in resolve_cells(nb, String(r))
+        c in out || push!(out, c)
+    end
+    out
 end
 
 const CELL_REF_DOC = "A cell NAME (a global it defines, e.g. \"throughput\"), a full UUID, or any unambiguous prefix of one (\"0dfbd0b6\" is normally plenty — ids are random)."
