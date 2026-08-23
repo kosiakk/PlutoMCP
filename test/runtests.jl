@@ -127,6 +127,19 @@ const S = "test"
     @test isempty(call("list", Dict("session" => S)))   # nothing open yet
 end
 
+@testset "every tool refuses a nonexistent session cleanly" begin
+    # Every handler resolves the session (or notebook) before touching any
+    # other argument, so this must produce the same clean "no session"
+    # message everywhere -- not a KeyError from some other required arg being
+    # absent, and not a crash.
+    for tool in P.ALL_TOOLS
+        tool.name == "start" && continue   # start CREATES the session
+        r = call(tool.name, Dict("session" => "absent"))
+        @test r.error
+        @test occursin("no session", r.message)
+    end
+end
+
 @testset "start twice under the same name doesn't leak the first server" begin
     T = "restart-leak-test"
     call("start", Dict("session" => T))
