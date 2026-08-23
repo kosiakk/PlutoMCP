@@ -548,7 +548,7 @@ const ALL_TOOLS = [pluto_start, pluto_open, pluto_create, pluto_list, pluto_read
 function build_server()
     mcp_server(
         name="pluto",
-        version="0.2.0",
+        version="0.3.0",
         description="Author and drive Pluto.jl notebooks. Pluto runs in-process and is called directly, so reads are always current, runs report honestly whether they finished, and edits appear instantly in an open browser tab — including to a human watching.",
         tools=ALL_TOOLS,
     )
