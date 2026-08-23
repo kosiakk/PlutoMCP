@@ -398,9 +398,10 @@ end""")
         try
             Pluto.update_save_run!(s.session, nb, Pluto.Cell[probe]; run_async=false, save=false)
             if probe.errored || !isfile(tmp)
-                # A named cell's global already has a rendered output; fall
-                # back to serving that rather than failing outright.
-                if named && startswith(string(c.output.mime), "image/") && c.output.body isa Vector{UInt8}
+                # The ORIGINAL cell (not the probe) may already have a
+                # rendered image as its output -- whether or not it's named --
+                # so fall back to serving that rather than failing outright.
+                if startswith(string(c.output.mime), "image/") && c.output.body isa Vector{UInt8}
                     return ImageContent(data=c.output.body, mime_type=string(c.output.mime))
                 end
                 probe.errored && error("render failed: $(probe.output.body)")
