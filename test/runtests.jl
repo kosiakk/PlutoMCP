@@ -83,10 +83,16 @@ end
 end
 
 @testset "resolve_cell" begin
-    nb = offline_notebook(["a = 1", "b = 2", "md\"x\""])
+    # Names that are not themselves valid hex digits: name lookup correctly
+    # takes priority over an ambiguous short UUID prefix (CELL_REF_DOC's
+    # documented order is name, full UUID, then prefix), so a single-letter
+    # name from a-f could otherwise coincidentally shadow a genuine prefix
+    # match below, which is a property of THIS test picking adversarial
+    # names, not a bug in resolve_cell.
+    nb = offline_notebook(["first = 1", "second = 2", "md\"x\""])
     id_md = string(nb.cells[3].cell_id)
 
-    @test P.resolve_cell(nb, "a").code == "a = 1"              # by name
+    @test P.resolve_cell(nb, "first").code == "first = 1"      # by name
     @test string(P.resolve_cell(nb, id_md).cell_id) == id_md   # by full UUID
 
     # A prefix resolves exactly when it is unique. The length needed depends on
@@ -175,6 +181,25 @@ end
     d = call("edit", Dict("session" => S, "edit_mode" => "delete", "cell_id" => "extra"))
     @test d.remaining == before
     @test call("output", Dict("session" => S, "cell_id" => "extra")).error
+end
+
+@testset "insert: ids don't collide like uuid1 would" begin
+    # Regression: `edit`'s insert used Pluto.Cell(code), which defaults to a
+    # time-based uuid1 -- the exact bug notebook_source's uuid4 ids were fixed
+    # to avoid, just reintroduced on this path. Several inserts in a row land
+    # in the same tick as easily as a loop does.
+    ids = String[]
+    for i in 1:10
+        r = call("edit", Dict("session" => S, "edit_mode" => "insert",
+                              "new_source" => "unnamed_insert_$i = $i", "block" => 60))
+        push!(ids, r.cells[1].cell_id)
+    end
+    @test length(unique(ids)) == 10
+    @test length(unique(first(id, 4) for id in ids)) == 10   # prefixes stay discriminating
+
+    for id in ids
+        call("edit", Dict("session" => S, "cell_id" => id, "edit_mode" => "delete"))
+    end
 end
 
 @testset "errors are reported" begin

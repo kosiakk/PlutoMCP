@@ -201,7 +201,11 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
             Pluto.update_save_run!(s.session, nb, Pluto.Cell[c]; run_async=false)
             _ok((deleted=string(c.cell_id), remaining=length(nb.cells)))
         elseif mode == "insert"
-            c = Pluto.Cell(code)
+            # cell_id=uuid4(): Cell's default is uuid1, which is time-based --
+            # exactly the prefix-collision bug notebook_source's ids avoid.
+            # Several inserts in a row from one tool call sequence land in the
+            # same tick just as easily as a loop does.
+            c = Pluto.Cell(; cell_id=uuid4(), code)
             at = ref === nothing ? 0 : findfirst(==(resolve_cell(nb, ref).cell_id), nb.cell_order)
             Pluto.withtoken(nb.executetoken) do
                 insert!(nb.cell_order, at + 1, c.cell_id)

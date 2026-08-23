@@ -241,9 +241,11 @@ end
 
 Accept a name, a UUID, or an unambiguous UUID prefix.
 
-Cell ids are `uuid1`, which is time-based: cells created in the same instant
-share their leading digits, so a short prefix is often ambiguous. That is
-reported rather than resolved arbitrarily.
+An ambiguous prefix is reported rather than resolved arbitrarily. In
+practice this needs a genuinely short prefix: every cell this package
+creates gets a uuid4 id (see notebook_source and edit's insert path),
+picked precisely so a short prefix stays discriminating -- unlike Cell's
+own default, uuid1, which is time-based and collides in exactly that case.
 """
 function resolve_cell(nb::Pluto.Notebook, ref::AbstractString)
     for c in nb.cells
