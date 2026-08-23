@@ -524,6 +524,7 @@ end
     again = call("read", Dict("session" => T))
     @test length(again.cells) == 3
     @test all(c -> haskey(c, :unchanged_since) && !haskey(c, :code), again.cells)
+    # ISO 8601 UTC, fixed width: lexicographic order IS chronological order.
     @test all(c -> c.unchanged_since <= again.timestamp, again.cells)
 
     # A real change comes back in full, and so does the cascade it caused.
@@ -546,6 +547,14 @@ end
     # everything -- an `edit` hands over its cascade, so there is no backlog.
     t = call("read", Dict("session" => T)).timestamp
     @test isempty(call("read", Dict("session" => T, "since" => t)).cells)
+
+    # A float unix time is still a timestamp: transcripts and older clients
+    # have them, and refusing one would only lose a delta. A string that is
+    # not a timestamp is refused with a message that shows the shape wanted.
+    unix = P.parse_timestamp(t)
+    @test isempty(call("read", Dict("session" => T, "since" => unix)).cells)
+    bad = call("read", Dict("session" => T, "since" => "yesterday"))
+    @test bad.error && occursin("timestamp", bad.message)
 
     # A change made OUTSIDE the tools -- what a browser patch does -- was never
     # delivered, so it is genuinely new and arrives in full.
@@ -882,7 +891,8 @@ end
         r = call(name, merge(Dict{String,Any}("session" => S), args))
         @test is_record(r)
         @test r.status in ("pending", "calculating", "success", "error")
-        @test r.timestamp > 1.7e9          # a real server clock, for `since`
+        # A real server clock, for `since` -- ISO 8601 UTC with milliseconds.
+        @test occursin(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$", r.timestamp)
         @test r.waited_seconds >= 0
     end
 end

@@ -33,8 +33,9 @@ same thing on a cell as on the record:
   result, and Pluto's reactive engine is the validator.
 - **`calculating`** — the run is still going. Call
   `read(wait_seconds=N, since=<the record's timestamp>)` and you get the same
-  record back, narrowed to what changed. Never compute a timestamp yourself;
-  copy the one you were given.
+  record back, narrowed to what changed. Timestamps are ISO 8601 UTC strings
+  (`"2026-08-23T18:42:23.788Z"`) — never compute one yourself; copy the one you
+  were given.
 
 `wait_seconds` defaults to 0.1, which is enough for an ordinary cell, so the
 common case comes back complete in one call. Raise it for work you expect to be
@@ -110,7 +111,7 @@ an `error` message if it failed.
 A cell you have already been shown, unchanged, comes back short:
 
 ```
-{"name": "total", "status": "success", "unchanged_since": 1787485656.06}
+{"name": "total", "status": "success", "unchanged_since": "2026-08-23T18:42:23.788Z"}
 ```
 
 That is the same cell, not a different one — you already have its code and its

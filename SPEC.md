@@ -57,7 +57,7 @@ Never a discriminator parameter over unrelated operations (`action=...`): `edit`
 ## One record
 
 Every tool response except `output` bytes, `start` host/secret, and `list` paths parses as the same record:
-`status, waited_seconds, timestamp, cells`.
+`status, waited_seconds, timestamp, cells`. `timestamp` is ISO 8601 UTC with milliseconds (`"2026-08-23T18:42:23.788Z"`) — fixed width, so lexicographic order is chronological order; `since` takes it back, and still accepts a float unix time.
 `cells` lists every cell the reactive cascade touched, including clean downstream re-runs.
 
 Cells this session already saw, unchanged, compress to `name, status, unchanged_since=<timestamp>`: at record build the server hashes each cell's full pre-truncation entry (code, status, rendered body, error, logs) and compares against the last hash reported to this session. Lazy, never on events: unreported intermediate states leave no trace, because the reference point is the agent's context, not notebook history.

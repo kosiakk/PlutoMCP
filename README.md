@@ -143,7 +143,7 @@ Every response except `output`'s bytes, `start`'s host/secret and `list`'s
 paths parses as the same record:
 
 ```json
-{"status": "success", "waited_seconds": 0.4, "timestamp": 1787485656.06,
+{"status": "success", "waited_seconds": 0.4, "timestamp": "2026-08-23T18:42:23.788Z",
  "cells": [{"name": "total", "cell_id": "…", "status": "success",
             "code": "total = a * b", "mime": "text/plain", "output": "42"}]}
 ```
@@ -153,7 +153,7 @@ on the record alike. `cells` covers everything the reactive cascade touched,
 including cells that re-ran cleanly.
 
 A cell this session has already been shown, unchanged, comes back as
-`{"name": "total", "status": "success", "unchanged_since": 1787485656.06}` —
+`{"name": "total", "status": "success", "unchanged_since": "2026-08-23T18:42:23.788Z"}` —
 compressed, not hidden, so the cascade stays countable while a long re-run
 costs a few bytes instead of a few kilobytes. `read(since=<timestamp>)` drops
 those cells entirely and gives a pure delta.

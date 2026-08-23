@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "7c9ca4940f904600ada748267fd023785a37649a"
+project_hash = "c4d6319c4a79b83a727c58345780f3bb7de4fa69"
 
 [[deps.ArgTools]]
 uuid = "0dad84c5-d112-42e6-8d28-ef12dabb789f"
@@ -331,10 +331,10 @@ uuid = "72656b73-756c-7461-726b-72656b6b696b"
 version = "1.2.2"
 
 [[deps.PlutoMCP]]
-deps = ["JSON3", "ModelContextProtocol", "Pluto", "Sockets", "UUIDs"]
+deps = ["Dates", "JSON3", "Logging", "ModelContextProtocol", "Pluto", "Sockets", "UUIDs"]
 path = "."
 uuid = "335e2ae6-fbe9-4aef-8d3f-16b8e403ee9e"
-version = "0.3.0"
+version = "0.4.1"
 
 [[deps.PrecompileSignatures]]
 git-tree-sha1 = "18ef344185f25ee9d51d80e179f8dad33dc48eb1"

@@ -15,7 +15,7 @@ One vocabulary, no synonyms:
   status           pending | calculating | success | error, cell and record alike
   code             the text of a cell, everywhere (Pluto's own word)
   cell / cells     the only way to address cells: name, UUID, or unique prefix
-  timestamp        server clock in the record; copy it back into `since`
+  timestamp        server clock in the record, ISO 8601 UTC; copy it back into `since`
 =#
 
 _ok(x) = TextContent(type="text", text=JSON3.write(x))
@@ -423,7 +423,7 @@ The notebook object is read directly, so a human's browser edits are already in 
         ToolParameter(name="cells", type="array", description="Cell references to report on. $CELL_REF_DOC Omit for all of them.", required=false),
         ToolParameter(name="tree", type="boolean", description="Add each reported cell's references, and its upstream/downstream cells", required=false, default=false),
         wait_param(),
-        ToolParameter(name="since", type="number", description="A `timestamp` from an earlier record: omit cells this session has already been shown unchanged, rather than listing them compactly. Copy the value, never compute it.", required=false),
+        ToolParameter(name="since", type="string", description="A `timestamp` from an earlier record, e.g. \"2026-08-23T18:42:23.788Z\": omit cells this session has already been shown unchanged, rather than listing them compactly. Copy the value, never compute it.", required=false),
         NOTEBOOK_PARAM,
         SESSION_PARAM,
     ],
@@ -464,7 +464,7 @@ is genuinely somebody else's.
 """
 function _human_edits(name, nb, since)
     log = get(CHANGES, (String(name), nb.notebook_id), NamedTuple[])
-    cutoff = since === nothing ? -Inf : Float64(since)
+    cutoff = something(parse_timestamp(since), -Inf)
     edits = Dict{String,NamedTuple}()
     for e in log
         e.at > cutoff || continue

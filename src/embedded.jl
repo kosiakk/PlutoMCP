@@ -367,6 +367,36 @@ function _forget_reported!(name::AbstractString, notebook_id::Base.UUID, cell_id
 end
 
 """
+    iso_timestamp(t) -> String
+
+The server clock as ISO 8601 UTC with milliseconds. A float unix time is the
+same number of characters and says nothing a reader can use; `2026-08-23T18:42:23.788Z`
+round-trips just as exactly, sorts lexicographically, and can be read.
+"""
+iso_timestamp(t::Real) =
+    Dates.format(Dates.unix2datetime(t), dateformat"yyyy-mm-dd\THH:MM:SS.sss") * "Z"
+
+"""
+    parse_timestamp(x) -> Union{Nothing,Float64}
+
+`since`, back from a client. An ISO string is what every record now hands out;
+a number is still accepted, because a float from an older transcript is a
+perfectly good timestamp and refusing it would only lose a delta.
+"""
+parse_timestamp(::Nothing) = nothing
+parse_timestamp(x::Real) = Float64(x)
+function parse_timestamp(x::AbstractString)
+    t = strip(String(x))
+    endswith(t, "Z") && (t = t[1:end-1])
+    try
+        Dates.datetime2unix(Dates.DateTime(t))
+    catch
+        error("since: expected a `timestamp` from an earlier record, like " *
+              "\"2026-08-23T18:42:23.788Z\", got \"$x\"")
+    end
+end
+
+"""
     record(name, nb, cells, finished, waited; since, changes, extra...) -> NamedTuple
 
 The one response shape: `status, waited_seconds, timestamp, cells`.
@@ -387,7 +417,9 @@ With `since`, unchanged cells are dropped entirely -- the same comparison,
 presented as a delta instead of a summary.
 
 `timestamp` is stamped BEFORE any cell is read, and it round-trips straight
-into `read(since=...)`. Stamp-first makes delivery at-least-once: a change
+into `read(since=...)`. It leaves here as an ISO 8601 UTC string and comes back
+through `parse_timestamp`; internally it stays a `Float64` unix time, which is
+what Pluto's own `last_run_timestamp` is measured in. Stamp-first makes delivery at-least-once: a change
 landing while the record is being assembled dates at or after the stamp, so the
 next read shows it again. Stamp-last would lose it. It is deliberately not
 taken under `nb.executetoken`: that is Pluto's RUN lock, held for the whole
@@ -395,7 +427,7 @@ reactive run, so waiting for it would make every `wait_seconds=0` call block
 until the run it was trying not to wait for had finished.
 """
 function record(name::AbstractString, nb::Pluto.Notebook, cells, finished::Bool, waited::Real;
-                since::Union{Nothing,Real}=nothing,
+                since::Union{Nothing,Real,AbstractString}=nothing,
                 changes::Dict{String,<:NamedTuple}=Dict{String,NamedTuple}(), extra...)
     timestamp = time()
     labels = cell_labels(nb)
@@ -416,7 +448,7 @@ function record(name::AbstractString, nb::Pluto.Notebook, cells, finished::Bool,
         if previous !== nothing && first(previous) == fingerprint
             since === nothing && push!(entries, (name = labels[id],
                                                  status = cell_status(c),
-                                                 unchanged_since = last(previous)))
+                                                 unchanged_since = iso_timestamp(last(previous))))
             continue
         end
         seen[c.cell_id] = (fingerprint, timestamp)
@@ -424,7 +456,7 @@ function record(name::AbstractString, nb::Pluto.Notebook, cells, finished::Bool,
     end
     merge((status = aggregate_status(statuses, finished),
            waited_seconds = round(Float64(waited); digits=2),
-           timestamp = timestamp,
+           timestamp = iso_timestamp(timestamp),
            cells = entries),
           NamedTuple(extra))
 end
