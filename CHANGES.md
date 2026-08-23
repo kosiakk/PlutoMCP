@@ -16,7 +16,7 @@ Do not add tools, parameters, or state beyond what is written here.
 
 These words appear in schemas, records, and docs. No synonyms, no abbreviations, no second spelling anywhere.
 
-- `wait_seconds`: parameter on every tool that runs or waits (`run`, `edit`, `read`, `bond`, `open`). Semantics, stated once in the server description: return the record on completion, on new error, or on expiry, whichever comes first. Replaces `block`, the `run_with_deadline` deadline, and any per-tool timeout. It is the same value flowing to the same internal function.
+- `wait_seconds`: parameter on every tool that runs or waits (`run`, `edit`, `read`, `bond`, `open`). Default 0.1, so fast cells converge in-call; explicit `0` is fire-and-forget. Semantics, stated once in the server description: return the record on completion, on new error, or on expiry, whichever comes first. Replaces `block`, the `run_with_deadline` deadline, and any per-tool timeout. It is the same value flowing to the same internal function.
 - `status`: one enum, `pending | calculating | success | error`, at both cell and record level. Replaces the `finished` and `errored` booleans everywhere. Record aggregation rule: any cell `error` means `error`, else any `pending`/`calculating` means `calculating`, else `success`. `wait_seconds=0` returns `status=calculating` with cell ids; no server push notifications, the next `read` observes completion.
 - `waited_seconds`: record field, the receipt for `wait_seconds`. Renames `waited_s`.
 - `code`: the text of a cell. Matches Pluto internals. Never `source`. CHANGES entries use `old_code`/`new_code`.
@@ -169,7 +169,16 @@ Cells cannot interrupt themselves, so this is legitimate tool territory.
 `run` remains only for recomputing cells whose non-reactive inputs changed: files on disk, RNG, environment.
 Its description says so. The from-scratch reproducibility check is `stop` + `open`, not `run`.
 
-## 17. Cleanup
+## 17. Deduplicate unchanged cells per session
+
+Per-(session, notebook) map, alongside the CHANGES infrastructure: cell id to (reported_hash, reported_at).
+Identity hash covers the full pre-truncation cell entry: code, status, rendered output body, error message, log entries.
+Hashing is LAZY: computed only while building a record, never on StateChangeEvents. Intermediate states that were never reported leave no trace (ABA is correct here: the reference point is what this session already has in context, not notebook history).
+Building a record, under the notebook lock, record `timestamp` stamped BEFORE reading cell state: current hash equal to reported_hash means the compact entry `name, status, unchanged_since=<reported_at>`; different means a full entry, then update the map. Stamp-first turns concurrent changes into at-least-once redelivery, which this dedup makes cheap; stamp-last would lose them.
+`since` is a presentation choice over the same comparison: without it, unchanged cells appear compactly (blast radius visible); with it, they are omitted (pure delta). No separate per-cell change timestamps, no run counters. Pluto's `last_run_timestamp`/`runtime` may ride along in full entries as metadata, never as the delta signal.
+Document the honesty boundary in the field description: `unchanged_since` certifies the rendered output. For sketched containers that is the summary, not the value. Value identity is a probe cell (`hash(x)`), never a server feature.
+
+## 18. Cleanup
 
 - License: GPL-3 → MIT. Blocks upstreaming and registry eligibility otherwise.
 - Remove the `questions` tool and the `attach_assistant!` fork path. The `kosiakk/Pluto.jl` branch is dead code. Remove the README link.
@@ -185,4 +194,5 @@ Its description says so. The from-scratch reproducibility check is `stop` + `ope
 - A `move`/save-as tool: file an issue. Live-notebook relocation needs `SessionActions.move`, but the authoring workflow knows paths upfront. Build it when usage logs show anonymous notebooks graduating.
 - Wrapping more of Pluto's native session API. Each operation earns a lifecycle tool through usage logs, never through completeness.
 - Any in-cell notebook-control mechanism (`@notebook` macro or similar). Cells run in the worker process, the session API lives in the host: this would be a second RPC control path, and it makes cells writers of their own notebook. The agent is the only writer, cells are pure computation.
+- A batch/array form of `edit`. Sequential `wait_seconds=0` inserts plus one `read` cover batch authoring; build the array form only if usage logs show cascade churn.
 - Further tool deletion or merging. Next round is decided by a month of usage logs, not design.

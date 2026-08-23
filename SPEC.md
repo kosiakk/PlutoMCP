@@ -30,13 +30,13 @@ Ten. Signatures are the contract; defaults shown.
 
 ```
 start()
-open(path=nothing, create=false, wait_seconds=0)
+open(path=nothing, create=false, wait_seconds=0.1)
 list()
-edit(notebook, cell=nothing, code=nothing, mode="replace", wait_seconds=0, delete_on_success=false)
-run(notebook, cells=nothing, wait_seconds=0)
-read(notebook, cells=nothing, tree=false, wait_seconds=0, since=nothing)
+edit(notebook, cell=nothing, code=nothing, mode="replace", wait_seconds=0.1, delete_on_success=false)
+run(notebook, cells=nothing, wait_seconds=0.1)
+read(notebook, cells=nothing, tree=false, wait_seconds=0.1, since=nothing)
 output(notebook, cell)
-bond(notebook, name, value, wait_seconds=0)
+bond(notebook, name, value, wait_seconds=0.1)
 export(notebook, path=nothing)
 stop(notebook=nothing, cell=nothing)
 ```
@@ -60,6 +60,10 @@ Every tool response except `output` bytes, `start` host/secret, and `list` paths
 `status, waited_seconds, timestamp, cells`.
 `cells` lists every cell the reactive cascade touched, including clean downstream re-runs.
 
+Cells this session already saw, unchanged, compress to `name, status, unchanged_since=<timestamp>`: at record build the server hashes each cell's full pre-truncation entry (code, status, rendered body, error, logs) and compares against the last hash reported to this session. Lazy, never on events: unreported intermediate states leave no trace, because the reference point is the agent's context, not notebook history.
+Unchanged certifies the rendered output; for sketched containers that is the summary, not the underlying data — value-level certainty is a probe cell (`hash(x)`).
+The cascade stays fully visible either way.
+
 `status` is one enum at both levels: `pending | calculating | success | error`.
 Cells carry their own; the record aggregates by one rule: any cell `error` means `error`, else any `pending` or `calculating` means `calculating`, else `success`.
 `wait_seconds=0` returns immediately with `status=calculating` and cell ids; completion is observed by the next `read`.
@@ -75,11 +79,11 @@ Output rendering:
 
 ## One vocabulary
 
-- `wait_seconds` on every running tool; `waited_seconds` its receipt in the record. One semantics: return on completion, on new error, or on expiry, whichever comes first. Expiry shows as `status=calculating`.
+- `wait_seconds` on every running tool, default 0.1; `waited_seconds` its receipt in the record. One semantics: return on completion, on new error, or on expiry, whichever comes first. Expiry shows as `status=calculating`. Fast cells converge within the default; `0` is fire-and-forget for batch authoring.
 - `status`: `pending | calculating | success | error`, the only progress vocabulary. No `finished`, no `errored` booleans anywhere.
 - `code` for cell text, everywhere. Human edits report `old_code` / `new_code`.
 - `cell` / `cells` for addressing cells, `notebook` for addressing notebooks: name/path, UUID, or unique prefix, resolved by one shared function.
-- `timestamp` from the record round-trips into `since`. The agent copies, never computes time.
+- `timestamp` from the record round-trips into `since`. The agent copies, never computes time. The stamp is snapshot acquisition time, taken before cell state is read, assembly under the notebook lock: concurrent changes land at or after the stamp and reappear next `read`. Delivery is at-least-once; dedup makes duplicates cost one compact line. `since` is a view over the same reported-hash comparison: omit unchanged cells instead of compacting them. Never Pluto run timestamps: re-ran is not changed.
 
 ## One loop
 
