@@ -191,7 +191,12 @@ exposes every declaration and dependency. A second implementation here can only
 drift from its semantics, and a wrong name is worse than an honest UUID.
 """
 function cell_labels(nb::Pluto.Notebook)
-    top = Pluto.updated_topology(Pluto.NotebookTopology{Pluto.Cell}(), nb, nb.cells)
+    # `nb.topology` is what Pluto's own reactive run keeps up to date after
+    # every change (see Run.jl's run_reactive_core!). Passing it as the base
+    # lets updated_topology reuse the analysis for every cell whose source
+    # hasn't changed since, instead of re-running ExpressionExplorer over the
+    # whole notebook on every call.
+    top = Pluto.updated_topology(nb.topology, nb, nb.cells)
     labels = Dict{String,String}()
     seen = Set{String}()
     for c in nb.cells
