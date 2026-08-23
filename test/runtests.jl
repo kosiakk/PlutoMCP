@@ -548,6 +548,21 @@ end
                               "notebook" => String(id_by_path))).body == "42"
 end
 
+@testset "a missing required argument errors instead of crashing" begin
+    # @safely's catch-all is the actual safety net here (these handlers index
+    # args[...] directly, trusting the required-ness declared in `parameters`)
+    # -- confirm it holds for every tool that has a required argument beyond
+    # session/notebook, not just the ones exercised incidentally elsewhere.
+    for (name, _required) in [("open", "path"), ("create", "cells"), ("execute", "expr"),
+                              ("output", "cell_id"), ("png", "cell_id"),
+                              ("deps", "cell_id"), ("docs", "cell_id")]
+        r = call(name, Dict("session" => S))
+        @test r.error
+    end
+    @test call("bond", Dict("session" => S, "name" => "x")).error       # value missing
+    @test call("bond", Dict("session" => S, "value" => 1)).error        # name missing
+end
+
 @testset "stop" begin
     # Each open notebook owns a worker process; stop must not just close the
     # HTTP server and leave those running.
