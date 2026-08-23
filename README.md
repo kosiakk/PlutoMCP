@@ -100,8 +100,10 @@ claude mcp add pluto -- julia --project=$HOME/Documents/PlutoMCP \
 | `edit` | replace / insert / delete a cell, then run it |
 | `run` | run cells |
 | `status` | what is still running, and which cells a human changed since you last looked |
-| `output` | one cell's output |
+| `execute` | evaluate an expression in the workspace, no cell created |
+| `output` | one cell's output, plus its logs |
 | `png` | render a plotting cell as an image |
+| `export` | self-contained HTML with code and outputs embedded |
 | `stop` | shut the server down |
 
 `edit` follows `NotebookEdit`'s vocabulary: `cell_id`, `new_source`,

@@ -343,6 +343,16 @@ end
     end
 end
 
+@testset "export: self-contained HTML" begin
+    r = call("export", Dict("session" => S))
+    @test endswith(r.path, ".html")
+    @test r.bytes > 0
+    html = read(r.path, String)
+    @test occursin("<html", lowercase(html))
+    @test occursin("data:text/julia", html)      # the .jl source is embedded
+    rm(r.path; force=true)
+end
+
 @testset "open an existing notebook" begin
     path = tempname() * ".jl"
     write(path, P.notebook_source(["q = 21", "doubled = q * 2"]))

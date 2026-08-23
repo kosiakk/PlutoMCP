@@ -364,6 +364,26 @@ end""")
     return_type=Content,
 )
 
+pluto_export = MCPTool(
+    name="export",
+    description="""Export the notebook as one self-contained HTML file: code, outputs and a copy of the `.jl` source are all embedded, viewable with no Pluto server and no internet connection.
+
+Commit the `.jl` and the exported `.html` together — that pair is the provenance record: every figure traces back to a cell in a notebook that reruns from scratch.""",
+    parameters=[
+        ToolParameter(name="path", type="string", description="Output .html path (default: the notebook's path with .jl replaced by .html)", required=false),
+        ToolParameter(name="session", type="string", description="Which session", required=false, default="default"),
+    ],
+    handler=(args -> @safely begin
+        nb = _notebook(_sess(args))
+        html = Pluto.generate_html(nb)
+        out = get(args, "path", nothing)
+        out = out === nothing ? (splitext(nb.path)[1] * ".html") : String(out)
+        write(out, html)
+        _ok((path=out, bytes=filesize(out)))
+    end),
+    return_type=TextContent,
+)
+
 pluto_stop = MCPTool(
     name="stop",
     description="Shut down the session's Pluto server and its notebook worker processes. Do this when finished rather than leaving a server running.",
@@ -375,7 +395,8 @@ pluto_stop = MCPTool(
 )
 
 const ALL_TOOLS = [pluto_start, pluto_open, pluto_create, pluto_read, pluto_edit,
-                   pluto_run, pluto_status, pluto_execute, pluto_output, pluto_png, pluto_stop]
+                   pluto_run, pluto_status, pluto_execute, pluto_output, pluto_png,
+                   pluto_export, pluto_stop]
 
 function build_server()
     mcp_server(
