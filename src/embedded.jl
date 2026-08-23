@@ -35,8 +35,8 @@ const CHANGES_MAX = 256
 
 # (session name, notebook_id) => cell_id => code, as of the last
 # StateChangeEvent. Lets the event hook tell an edit apart from a mere state
-# transition (queued/running), and reconstructs the `old_code`/`new_code` pair
-# `read` reports. Same per-notebook keying as CHANGES, for the same reason.
+# transition (queued/running), and reconstructs the pair `read` reports as
+# `old_code` and `code`. Same per-notebook keying as CHANGES, for the same reason.
 const SNAPSHOTS = Dict{Tuple{String,Base.UUID},Dict{Base.UUID,String}}()
 
 """
@@ -353,18 +353,18 @@ function cell_info(nb::Pluto.Notebook, c::Pluto.Cell, labels=cell_labels(nb);
     return info
 end
 
-"""
-    drop_echoed_code(r, c, code) -> record
+#=
+(session, notebook) => cell_id => (fingerprint, reported_at) for the last
+version of that cell this SESSION was told about.
 
-Remove `code` from the entry for the cell the caller just wrote. An `edit`
-handed us that text; sending it straight back is the one field of the record
-the agent already has, and for a large cell it is the largest.
+The reference point is the agent's context, not the notebook's history, and
+that is why the map is written only while building a record -- never from a
+StateChangeEvent. A cell that changed and changed back between two records was
+never reported in between, so there is nothing for the agent to re-read: ABA is
+the right answer here, not a bug to defend against.
+=#
+const REPORTED = Dict{Tuple{String,Base.UUID},Dict{Base.UUID,Tuple{UInt64,Float64}}}()
 
-Only when the stored code is byte-identical to what arrived. A markdown cell is
-wrapped in `md\"\"\"` on the way in, and a cell whose text is not what the caller
-sent is news, not an echo -- so the comparison, not the mode, decides.
-
-Everything else stays: status, output, error, logs, name and cell_id are the
 #=
 (session, notebook) => cell_id => hash of the cell's code, for code this
 SESSION already holds -- because a record delivered it, or because an `edit`
@@ -396,33 +396,11 @@ function _mark_code_sent!(name::AbstractString, notebook_id::Base.UUID, cell_id,
     return nothing
 end
 
-answer the edit was asked for.
-"""
-function drop_echoed_code(r::NamedTuple, c::Pluto.Cell, code::AbstractString)
-    c.code == code || return r
-    haskey(CODE_SENT, key) && delete!(CODE_SENT[key], cell_id)
-    id = string(c.cell_id)
-    merge(r, (cells = Any[e isa NamedTuple && get(e, :cell_id, nothing) == id ?
-                          Base.structdiff(e, NamedTuple{(:code,)}) : e
-                          for e in r.cells],))
-end
-
-#=
-(session, notebook) => cell_id => (fingerprint, reported_at) for the last
-version of that cell this SESSION was told about.
-
-The reference point is the agent's context, not the notebook's history, and
-that is why the map is written only while building a record -- never from a
-StateChangeEvent. A cell that changed and changed back between two records was
-never reported in between, so there is nothing for the agent to re-read: ABA is
-the right answer here, not a bug to defend against.
-=#
-const REPORTED = Dict{Tuple{String,Base.UUID},Dict{Base.UUID,Tuple{UInt64,Float64}}}()
-
 "Drop a cell from the reported map, so a deleted cell stops costing memory."
 function _forget_reported!(name::AbstractString, notebook_id::Base.UUID, cell_id)
     key = (String(name), notebook_id)
     haskey(REPORTED, key) && delete!(REPORTED[key], cell_id)
+    haskey(CODE_SENT, key) && delete!(CODE_SENT[key], cell_id)
     return nothing
 end
 
