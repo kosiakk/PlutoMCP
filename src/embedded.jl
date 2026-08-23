@@ -666,15 +666,38 @@ yet saved to disk; call `Pluto.save_notebook` (or open it via a session) when
 ready.
 """
 function notebook_source(cells::Vector{String})
-    pcells = [Pluto.Cell(;
-                  # uuid4, not Cell's default uuid1: uuid1 is time-based, and
-                  # cells created in a loop land in the same tick, so their ids
-                  # share a long leading run of digits and a short prefix
-                  # identifies nothing. Random ids make prefixes discriminating.
-                  cell_id=uuid4(), code=src)
-              for src in cells]
+    pcells = [new_cell(src) for src in cells]
     Pluto.Notebook(pcells)
 end
+
+"""
+    is_prose(code) -> Bool
+
+Whether this cell is prose: its expression is `md"…"` or `html"…"`.
+
+Not a cell type -- Pluto has none, and neither does the tool surface. It is a
+guess about DISPLAY, made where a person would make the same one.
+"""
+is_prose(code::AbstractString) = occursin(r"^\s*(md|html)\"", code)
+
+"""
+    new_cell(code) -> Pluto.Cell
+
+Every cell this package creates, made in one place.
+
+`uuid4`, not `Cell`'s default `uuid1`: uuid1 is time-based, so cells created in
+a loop land in the same tick, share a long leading run of digits, and a short
+prefix identifies nothing. Random ids keep prefixes discriminating.
+
+Prose starts folded, the way a person writing a notebook would fold it: Pluto
+renders `md"…"` and the source is one click away, so leaving it open puts a
+paragraph of markup in front of a reader who wanted the paragraph. It is a
+display default and nothing more -- `code_folded` is Pluto's own field, it
+persists in the file (a `# ╟─` line rather than `# ╠═`), the human unfolds it
+with one click, and no tool takes it, reports it or depends on it.
+"""
+new_cell(code::AbstractString) =
+    Pluto.Cell(; cell_id=uuid4(), code=String(code), code_folded=is_prose(code))
 
 # --------------------------------------------------------- the render helper --
 

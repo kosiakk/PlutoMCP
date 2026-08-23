@@ -313,9 +313,7 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
             _ok(record(name, nb, filter(x -> x.cell_id != c.cell_id, touched), finished, waited;
                        deleted=gone))
         elseif mode == "insert"
-            # cell_id=uuid4(): Cell's default is uuid1, which is time-based --
-            # exactly the prefix collision that makes a short reference useless.
-            c = Pluto.Cell(; cell_id=uuid4(), code)
+            c = new_cell(code)
             at = ref === nothing ? length(nb.cell_order) :
                  findfirst(==(resolve_cell(nb, String(ref)).cell_id), nb.cell_order)
             Pluto.withtoken(nb.executetoken) do

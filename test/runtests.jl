@@ -55,6 +55,21 @@ is_record(r) = all(f -> haskey(r, f), RECORD_FIELDS) &&
 
 end
 
+@testset "prose cells start folded" begin
+    # A display default, made where a person would make the same one: Pluto
+    # renders md"…", so leaving the source open puts markup in front of a
+    # reader who wanted the paragraph. One click unfolds it.
+    @test P.is_prose("md\"\"\"# Findings\"\"\"")
+    @test P.is_prose("  md\"one line\"")
+    @test P.is_prose("html\"<b>hi</b>\"")
+    @test !P.is_prose("x = 1")
+    @test !P.is_prose("model = md_fit(x)")        # a name that merely starts md
+    @test !P.is_prose("\"a plain string\"")
+
+    @test P.new_cell("md\"hi\"").code_folded
+    @test !P.new_cell("x = 1").code_folded
+end
+
 @testset "is_name" begin
     @test P.is_name("abl")
     @test P.is_name("read_curve")
