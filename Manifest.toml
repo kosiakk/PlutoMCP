@@ -334,7 +334,7 @@ version = "1.2.2"
 deps = ["Dates", "JSON3", "Logging", "ModelContextProtocol", "Pluto", "Sockets", "UUIDs"]
 path = "."
 uuid = "335e2ae6-fbe9-4aef-8d3f-16b8e403ee9e"
-version = "0.4.4"
+version = "0.4.5"
 
 [[deps.PrecompileSignatures]]
 git-tree-sha1 = "18ef344185f25ee9d51d80e179f8dad33dc48eb1"
