@@ -324,29 +324,27 @@ end
 """Cells currently running or queued, anywhere in the notebook."""
 busy_cells(nb::Pluto.Notebook) = [c for c in nb.cells if c.running || c.queued]
 
-"""Turn a list of cell sources into a notebook file Pluto can open."""
+"""
+    notebook_source(cells; cell_types) -> Pluto.Notebook
+
+Build a notebook from `Pluto.Cell`/`Pluto.Notebook` directly -- never by
+hand-writing the `.jl` file's text format, which only Pluto should own. Not
+yet saved to disk; call `Pluto.save_notebook` (or open it via a session) when
+ready.
+"""
 function notebook_source(cells::Vector{String};
                          cell_types::Vector{String}=fill("code", length(cells)))
     length(cell_types) == length(cells) ||
         error("cell_types has $(length(cell_types)) entries for $(length(cells)) cells")
-    # uuid4, not uuid1: uuid1 is time-based, and cells generated in a loop land
-    # in the same tick, so their ids share a long leading run of digits and a
-    # short prefix identifies nothing. Random ids make prefixes discriminating.
-    ids = [uuid4() for _ in cells]
-    io = IOBuffer()
-    println(io, "### A Pluto.jl notebook ###")
-    println(io, "# v0.20.4")
-    println(io)
-    for (id, src, t) in zip(ids, cells, cell_types)
-        println(io, "# ╔═╡ ", id)
-        println(io, t == "markdown" ? _wrap_markdown(src) : src)
-        println(io)
-    end
-    println(io, "# ╔═╡ Cell order:")
-    for (id, t) in zip(ids, cell_types)
-        println(io, t == "markdown" ? "# ╟─" : "# ╠═", id)
-    end
-    return String(take!(io))
+    pcells = [Pluto.Cell(;
+                  # uuid4, not Cell's default uuid1: uuid1 is time-based, and
+                  # cells created in a loop land in the same tick, so their ids
+                  # share a long leading run of digits and a short prefix
+                  # identifies nothing. Random ids make prefixes discriminating.
+                  cell_id=uuid4(),
+                  code = t == "markdown" ? _wrap_markdown(src) : src)
+              for (src, t) in zip(cells, cell_types)]
+    Pluto.Notebook(pcells)
 end
 
 _wrap_markdown(src::String) = startswith(strip(src), "md\"") ? src : "md\"\"\"\n$src\n\"\"\""

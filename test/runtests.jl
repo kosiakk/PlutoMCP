@@ -12,30 +12,29 @@ function call(name::String, args::Dict=Dict{String,Any}())
     r isa P.TextContent ? JSON3.read(r.text) : r
 end
 
-"A notebook parsed from source, with no server involved."
-function offline_notebook(cells::Vector{String};
-                          cell_types::Vector{String}=fill("code", length(cells)))
-    path = tempname() * ".jl"
-    write(path, P.notebook_source(cells; cell_types))
-    Pluto.load_notebook_nobackup(path)
-end
+"A notebook built from source, with no server involved."
+offline_notebook(cells::Vector{String}; cell_types::Vector{String}=fill("code", length(cells))) =
+    P.notebook_source(cells; cell_types)
 
 # ---------------------------------------------------------------------------
 # Pure: no Pluto server, fast.
 # ---------------------------------------------------------------------------
 
 @testset "notebook_source" begin
-    src = P.notebook_source(["x = 1", "# heading"]; cell_types=["code", "markdown"])
-    @test occursin("### A Pluto.jl notebook ###", src)
-    @test occursin("x = 1", src)
-    @test occursin("md\"\"\"", src)              # markdown cell wrapped
-    @test occursin("# ╔═╡ Cell order:", src)
-    @test count("# ╔═╡ ", src) == 3             # two cells + the order header
-    @test Meta.parseall(src) isa Expr           # a notebook file is valid Julia
+    nb = P.notebook_source(["x = 1", "# heading"]; cell_types=["code", "markdown"])
+    @test nb isa Pluto.Notebook
+    @test length(nb.cells) == 2
+    @test nb.cells[1].code == "x = 1"
+    @test occursin("md\"\"\"", nb.cells[2].code)  # markdown cell wrapped
 
     # Markdown that is already md"..." must not be double-wrapped.
-    s2 = P.notebook_source(["md\"already\""]; cell_types=["markdown"])
-    @test !occursin("md\"\"\"\nmd\"already\"", s2)
+    nb2 = P.notebook_source(["md\"already\""]; cell_types=["markdown"])
+    @test !occursin("md\"\"\"\nmd\"already\"", nb2.cells[1].code)
+
+    # ids are uuid4, not Cell's default uuid1 (time-based): cells made in a
+    # tight loop still need discriminating prefixes -- see resolve_cell.
+    many = P.notebook_source(fill("1", 20))
+    @test length(unique(c.cell_id for c in many.cells)) == 20
 
     @test_throws ErrorException P.notebook_source(["a", "b"]; cell_types=["code"])
 end
@@ -355,9 +354,10 @@ end
 end
 
 @testset "open an existing notebook" begin
-    path = tempname() * ".jl"
-    write(path, P.notebook_source(["q = 21", "doubled = q * 2"]))
-    r = call("open", Dict("session" => S, "path" => path))
+    nb = P.notebook_source(["q = 21", "doubled = q * 2"])
+    nb.path = tempname() * ".jl"
+    Pluto.save_notebook(nb)
+    r = call("open", Dict("session" => S, "path" => nb.path))
     @test length(r.cells) == 2
     @test call("output", Dict("session" => S, "cell_id" => "doubled")).body == "42"
 end

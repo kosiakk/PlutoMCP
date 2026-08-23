@@ -108,9 +108,12 @@ The first cell is always a `<style>` widening the page: Pluto's fixed-width colu
         cells = [WIDE_LAYOUT_CELL; String.(args["cells"])]
         types = haskey(args, "cell_types") && args["cell_types"] !== nothing ?
                 ["code"; String.(args["cell_types"])] : fill("code", length(cells))
-        src = notebook_source(cells; cell_types=types)
-        path = Pluto.SessionActions.save_upload(src; filename_base=get(args, "filename", nothing))
-        nb = Pluto.SessionActions.open(s.session, path; run_async=true)
+        draft = notebook_source(cells; cell_types=types)
+        filename = get(args, "filename", nothing)
+        filename !== nothing && (draft.path = Pluto.numbered_until_new(
+            joinpath(Pluto.new_notebooks_directory(), String(filename)); suffix=".jl"))
+        Pluto.save_notebook(draft)
+        nb = Pluto.SessionActions.open(s.session, draft.path; run_async=true)
         s.notebook[] = nb
         for c in nb.cells
             _mark_seen!(name, c.cell_id, c.code)
