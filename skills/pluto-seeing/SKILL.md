@@ -68,13 +68,14 @@ plot as a braille canvas is ~5 KB of text and on the order of 2000 tokens,
 because braille codepoints tokenize badly and every blank `⠀` is a character.
 Six times the cost to see less.
 
-For a figure that is not a cell's own value — one built inside a `let`, or a
-subplot — `PlutoMCP.AsPNG(fig)` in a `delete_on_success` cell renders anything
-showable. It is injected into every notebook workspace, and it exists because
-Pluto's MIME preference is not the agent's.
+A cell that defines no name — a plot built inside a `let`, a subplot — works
+the same way: `output` addresses cells by id, and every cell has one.
 
-Other formats (WebP, PDF) are a cell calling the plotting library's own save
-function, never a tool feature.
+The same call gives you any other format the figure supports, because it is
+just asking Julia to show the value that way: `mime="image/svg+xml"` returns
+the XML, `mime="application/pdf"` the PDF. Add `path="figure.svg"` and it is
+written to that file at any size instead of coming back to you — which is how
+you save a figure without writing a cell for it.
 
 ## 4. Text plots, rarely
 

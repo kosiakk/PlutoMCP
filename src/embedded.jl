@@ -747,25 +747,48 @@ end
 
 _value(id) = getfield(Main, :PlutoRunner).cell_results[Base.UUID(id)]
 
-# 8 MB of text is far past anything worth reading and still cheap to move
-# in-process; `IOBuffer(maxsize=)` stops the write rather than the machine.
-const TEXT_CAP = 8_000_000
-
-# The most complete text Julia has: `show(io, MIME"text/plain"(), x)` is the
-# `display` form -- what the REPL prints -- and `:limit=>false` turns off the
-# elision the REPL adds. Anything shorter is a summary, and the record already
-# carries one of those.
-function full_text(id)
-    io = IOBuffer(maxsize=TEXT_CAP)
-    show(IOContext(io, :limit => false, :color => false, :compact => false),
-         MIME"text/plain"(), _value(id))
-    String(take!(io))
-end
+# Far past anything worth carrying, and still cheap in-process;
+# `IOBuffer(maxsize=)` stops the write rather than the machine.
+const RENDER_CAP = 32_000_000
 
 # The same rendering, as bytes -- so the SERVER can ask for a picture on the
 # agent's behalf, without a cell and without a round trip through the agent.
 png_bytes(fig) = (io = IOBuffer(); show(io, MIME"image/png"(), AsPNG(fig)); take!(io))
-png_of(id) = png_bytes(_value(id))
+
+# Every MIME worth offering, in the order a person would try them.
+const CANDIDATES = ["text/plain", "text/html", "text/markdown", "text/latex",
+                    "image/png", "image/svg+xml", "image/jpeg", "application/pdf"]
+
+# render(id, mime) -> Vector{UInt8}, or nothing if the value cannot do that MIME.
+#
+# One cell's value, shown as `mime`, exactly as Julia shows it. text/plain is
+# the display form with the REPL's elision turned off -- the most complete text
+# there is. Everything else is show(io, MIME(mime), value), the same dispatch a
+# frontend or a file writer gets: ask a figure for image/svg+xml and the answer
+# is the XML.
+#
+# image/png is the one MIME that gets help, and only because a plotting backend
+# may be able to SAVE a PNG without being able to SHOW one -- see AsPNG, which
+# exists for that and is nobody's business but this function's.
+function render(id, mime::AbstractString)
+    v = _value(id)
+    io = IOBuffer(maxsize=RENDER_CAP)
+    if mime == "text/plain"
+        show(IOContext(io, :limit => false, :color => false, :compact => false),
+             MIME"text/plain"(), v)
+    elseif mime == "image/png"
+        show(io, MIME"image/png"(), AsPNG(v))
+    elseif showable(MIME(mime), v)
+        show(io, MIME(mime), v)
+    else
+        return nothing
+    end
+    take!(io)
+end
+
+# What this value can be shown as, for a caller who asked for something it cannot.
+offers(id) = (v = _value(id);
+              [m for m in CANDIDATES if m == "text/plain" || showable(MIME(m), v)])
 
 end
 """

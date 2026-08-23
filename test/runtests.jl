@@ -923,7 +923,7 @@ end
     end
 end
 
-@testset "output refuses vector-image markup instead of pasting it" begin
+@testset "output renders whatever MIME the value supports" begin
     # A Plots figure stores SVG, which no MCP client can show. Handing back a
     # screenful of <path d="..."> is not a smaller version of the picture, it
     # is a picture nobody gets -- so `output` names the shape and the way out.
@@ -942,7 +942,23 @@ end
     # the hint is what is left -- naming the cell, so it can be run as printed.
     r = call("output", Dict("session" => S, "cell" => "svgfig", "mime" => "image/png"))
     @test !occursin("<path", string(r))          # not one screenful of it, either
-    @test occursin("PNG", r.hint)
+    # It cannot be a PNG, so the answer says what it can be -- no guessing, and
+    # no advice about helpers the agent should never have to know about.
+    @test occursin("image/svg+xml", r.hint)
+    @test !occursin("AsPNG", string(r))
+
+    # ...and asking for what it CAN do returns the XML, because render is just
+    # `show(io, MIME(mime), value)`.
+    xml = call("output", Dict("session" => S, "cell" => "svgfig", "mime" => "image/svg+xml"))
+    @test occursin("<svg", xml.output)
+
+    # `path` writes it to a file at any size, which is how a figure is saved.
+    out = tempname() * ".svg"
+    saved = call("output", Dict("session" => S, "cell" => "svgfig",
+                                "mime" => "image/svg+xml", "path" => out))
+    @test saved.path == out && isfile(out) && saved.bytes > 1000
+    @test occursin("<svg", read(out, String))
+    rm(out; force=true)
 
     # The method cell defines no global, so it is addressed by id -- and it goes
     # FIRST: left behind, it would error the moment TinySVG stopped existing.

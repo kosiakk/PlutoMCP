@@ -42,7 +42,7 @@ stop(notebook=nothing, cell=nothing)
 ```
 
 - `start` / `stop`: lifecycle, scope narrowing with each argument. `stop()` stops everything, `stop(notebook)` shuts one notebook down and sweeps its spill files, `stop(notebook, cell)` interrupts that cell's evaluation (the UI stop button).
-- `open`: get a notebook, running it. Pathless create gives an anonymous scratch notebook (Pluto cutename in tempdir); the description tells the agent to name kept work after the experiment. New notebooks get the wide-layout cell; every workspace gets the `AsPNG` helper.
+- `open`: get a notebook, running it. Pathless create gives an anonymous scratch notebook (Pluto cutename in tempdir); the description tells the agent to name kept work after the experiment. New notebooks get the wide-layout cell; every workspace gets the render helpers.
 - `list`: open notebooks and their paths.
 - `edit`: `mode` is `replace`, `insert` (after `cell`, or append when `cell=nothing`), or `delete`. Modes share every other argument, which is why one tool holds them. `delete_on_success=true`: the cell runs normally in the workspace, visible in the browser, and is deleted iff `status` is `success` at return time; otherwise it stays and the agent removes it by the returned id. With `wait_seconds=0` the server returns before witnessing success, so the flag never fires. That return-time deletion is its entire contract.
 - `run`: recompute cells (`cells=nothing` means all). Backup path only: `edit` saves and runs, human browser edits run through Pluto's UI, so `run` exists for cells whose non-reactive inputs changed (files on disk, RNG, env). The from-scratch reproducibility check is `stop` + `open`, not `run`.
@@ -84,7 +84,9 @@ Pluto already decided how a value should be summarised for someone who cannot ho
 
 `output` is the other question — *what is this value, exactly* — and Julia already answers it: `show(io, MIME"text/plain"(), x)` is the `display` form, and `IOContext(:limit => false)` turns off the elision the REPL adds for its own comfort. So `output` fetches the value from the worker by `cell_id` (`PlutoRunner.cell_results`, so a cell that defines no name is as readable as a global) and prints it exactly as Julia would. Not our formatting of Pluto's summary of Julia's value — Julia's own.
 
-**The plot is the exception on both sides, and only because MIME preference is not the agent's.** Pluto stores one rendered MIME per cell and prefers SVG whenever a backend offers both; SVG is markup no MCP client can show. So the record says `mime` and stops (a picture is not describable in words, and a byte count is a number nobody can look at), and `output` asks the figure's own library for a PNG. `AsPNG` exists for exactly this and nothing else.
+**The plot is the exception on both sides, and only because MIME preference is not the agent's.** Pluto stores one rendered MIME per cell and prefers SVG whenever a backend offers both; SVG is markup no MCP client can show. So the record says `mime` and stops — a picture is not describable in words, and a byte count is a number nobody can look at — and the agent asks `output` for the form it wants.
+
+That ask is not a plot feature: `output(mime=…)` is `show(io, MIME(mime), value)`, the same dispatch a file writer gets, so a figure answers `image/png` with the picture and `image/svg+xml` with the XML, and a value that cannot do the asked-for MIME answers with the list of ones it can. `AsPNG` is the one piece of help underneath it — a plotting backend may be able to SAVE a PNG without being able to SHOW one — and it is an implementation detail of `render`. Nothing agent-facing mentions it, and nothing should: the agent asks for a MIME.
 
 Everything else follows:
 - Text: inline up to 2 KB; larger spills to a file and the payload names the path. One door, every path.
@@ -117,8 +119,8 @@ How the agent looks at data, cheapest first:
 3. The picture, when shape is the question: `output` on the plotting cell. Vision input is billed by pixel area (~`w*h/750`), not file size — 600x400 is ~320 tokens, where the same plot as a braille canvas is ~5 KB of text and ~2000 tokens. Cheaper to see more.
 4. A text plot only when the notebook has no plotting library and the question does not justify adding one: `using UnicodePlots` writes a dependency into the notebook file that outlives the probe cell. `histogram` is the exception worth having, because it prints counts beside the bars — and `fit(Histogram, x, edges).weights` gives those counts with no package at all.
 
-`AsPNG(fig)` is a wrapper whose only `show` method is `image/png`. It must exist: Pluto stores one rendered MIME per cell by its own preference (SVG for Plots, HTML for some backends). `output` uses it on the agent's behalf for a cell whose value is a figure -- named, idle notebook, PNG-capable library, else it returns the shape and a hint. `AsPNG` in a cell covers the rest: a figure built inside a `let`, or one the notebook never bound to a name.
-Format conversions are probe cells calling the plotting library directly.
+The picture is `output(cell, mime="image/png")`, and any other format is the same call with another MIME — `image/svg+xml` for the XML, `application/pdf` for the PDF — because `render` is `show(io, MIME(mime), value)` and nothing more. `path=` writes it to a file at any size, so saving a figure costs no cell. A cell that defines no name is reachable like any other: `output` addresses by cell_id.
+`AsPNG` lives under `render` and is never named to the agent: it covers backends that can save a PNG but not show one.
 
 ## Safety and transport
 

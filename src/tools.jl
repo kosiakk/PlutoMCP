@@ -519,7 +519,7 @@ function _tree_of(nb, c::Pluto.Cell, labels)
 end
 
 """
-    _from_worker(session_name, nb, c, call) -> Union{Nothing,Any}
+    _from_worker(session_name, nb, c, call, extra...) -> Union{Nothing,Any}
 
 Ask the notebook's worker for something about cell `c`'s VALUE.
 
@@ -529,31 +529,36 @@ cell has, rather than by a variable name, which most do not.
 
 `nothing` is a real answer, and there are exactly two ways to get it: the
 notebook is busy (a read must not queue behind the run it was called to look
-at), or the worker could not produce it. The caller turns either into a
-message; neither is worth failing over.
+at), or the worker could not produce what was asked for. The caller turns
+either into a message; neither is worth failing over.
 """
-function _from_worker(session_name, nb::Pluto.Notebook, c::Pluto.Cell, call::Symbol)
+function _from_worker(session_name, nb::Pluto.Notebook, c::Pluto.Cell, call::Symbol, extra...)
     isempty(busy_cells(nb)) || return nothing
     s = _session(session_name)
     ensure_helpers!(s.session, nb)
     try
         Pluto.WorkspaceManager.eval_fetch_in_workspace((s.session, nb),
-            :(Main.PlutoMCP.$call($(string(c.cell_id)))))
+            :(Main.PlutoMCP.$call($(string(c.cell_id)), $(extra...))))
     catch
         nothing
     end
 end
 
+# Which MIMEs an MCP client can actually display. Everything else is text to a
+# reader -- SVG included, which is why asking for it hands back the XML.
+const VIEWABLE = Set(["image/png", "image/jpeg", "image/gif", "image/webp"])
+
 pluto_output = MCPTool(
     name="output",
-    description="""One cell's value, complete, in the representation you name.
+    description="""One cell's value, shown as you ask for it — the same value, in whatever form Julia can render it.
 
-`text/plain` is the value as Julia itself prints it, with nothing elided — the record only ever carries a summary. `image/png` is the picture, including a figure Pluto stored as SVG, which is asked for a PNG rather than handed over as markup.
+`text/plain` is the value as Julia prints it, with nothing elided; the record only ever carries a summary. `image/png` is the picture, for a cell whose value is a figure. Ask a figure for `image/svg+xml` and you get the XML; `text/html`, `text/markdown`, `application/pdf` and anything else the value supports work the same way. Ask for something it cannot be and the answer lists what it can.
 
-Either one spills to a file when it is too big to carry, and the path comes back instead — read or grep it directly. The value is read from the worker, so this never re-runs anything, and a busy notebook is asked to wait rather than queued behind.""",
+`path` writes the result to that file instead of carrying it, whatever the size, and returns the path — that is how you save a figure or a table. With no `path`, the result comes back inline, spilling to a file only when it is too big to carry.""",
     parameters=[
         ToolParameter(name="cell", type="string", description=CELL_REF_DOC, required=true),
-        ToolParameter(name="mime", type="string", description="\"text/plain\" for the value as text, \"image/png\" for a figure.", required=true),
+        ToolParameter(name="mime", type="string", description="How to render it: \"text/plain\" for the value as text, \"image/png\" for a picture, or any MIME the value can show as (\"image/svg+xml\", \"text/html\", \"application/pdf\", …).", required=true),
+        ToolParameter(name="path", type="string", description="Write the rendered result to this file and return the path, at any size. Omit to have it inline.", required=false),
         NOTEBOOK_PARAM,
         SESSION_PARAM,
     ],
@@ -561,36 +566,41 @@ Either one spills to a file when it is too big to carry, and the path comes back
         nb = _nb(args); c = resolve_cell(nb, String(args["cell"]))
         label = cell_labels(nb)[string(c.cell_id)]
         want = String(args["mime"])
-        want in ("text/plain", "image/png") ||
-            error("mime: expected \"text/plain\" or \"image/png\", got \"$want\"")
+        dest = get(args, "path", nothing)
 
-        # A cell that failed has no value to fetch: the error IS its result, and
-        # the record already put it in structured form.
+        # A cell that failed has no value to render: the error IS its result,
+        # and the record already put it in structured form.
         if c.errored
             return _ok((cell=label, status="error",
                         error=truncate_payload(_error_text(c); nb, label, kind="error")))
         end
 
-        if want == "image/png"
-            png = _from_worker(_sess(args), nb, c, :png_of)
-            png isa Vector{UInt8} && !isempty(png) || return _ok((cell=label,
-                mime=string(c.output.mime),
-                hint="Could not render $label as a PNG: it is not a figure, its " *
-                     "library offers no PNG, or the notebook was busy."))
-            # Bigger than a comfortable payload is worth a path instead: the
-            # client and the server share a machine.
-            length(png) > 1_000_000 || return ImageContent(data=png, mime_type="image/png")
-            dir = spill_dir(nb); mkpath(dir)
-            path = joinpath(dir, "$(_slug(label))-output.png")
-            write(path, png)
-            return _ok((cell=label, mime="image/png", path=path))
+        bytes = _from_worker(_sess(args), nb, c, :render, want)
+        if !(bytes isa Vector{UInt8}) || isempty(bytes)
+            can = _from_worker(_sess(args), nb, c, :offers)
+            return _ok((cell=label, mime=string(c.output.mime),
+                        hint = can isa Vector ?
+                            "$label cannot be shown as $want. It can be: $(join(can, ", "))." :
+                            "Could not render $label — the notebook is busy, or the cell has not run."))
         end
 
-        text = _from_worker(_sess(args), nb, c, :full_text)
-        text isa AbstractString ||
-            error("could not read $label's value — the notebook is busy, or the cell has not run")
-        _ok((cell=label, mime="text/plain", status=cell_status(c),
-             output=truncate_payload(text; nb, label, kind="full")))
+        if dest !== nothing
+            out = String(dest)
+            mkpath(dirname(abspath(out)))
+            write(out, bytes)
+            return _ok((cell=label, mime=want, path=out, bytes=length(bytes)))
+        end
+        if want in VIEWABLE
+            # Bigger than a comfortable payload is worth a path instead: the
+            # client and the server share a machine.
+            length(bytes) > 1_000_000 || return ImageContent(data=bytes, mime_type=want)
+            dir = spill_dir(nb); mkpath(dir)
+            path = joinpath(dir, "$(_slug(label))-output." * last(split(want, "/")))
+            write(path, bytes)
+            return _ok((cell=label, mime=want, path=path, bytes=length(bytes)))
+        end
+        _ok((cell=label, mime=want, status=cell_status(c),
+             output=truncate_payload(String(bytes); nb, label, kind="full")))
     end),
     return_type=Content,
 )
