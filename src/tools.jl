@@ -1,7 +1,7 @@
 #=
-The MCP surface: nine tools, one record, one vocabulary.
+The MCP surface: eight tools, one record, one vocabulary.
 
-Nine because every capability question has the same answer -- the agent writes a
+Eight because every capability question has the same answer -- the agent writes a
 cell. Probing a value, reading a docstring, computing a statistic, rendering a
 plot: all of these are cells, usually deleted on success. Tools exist only where
 cells cannot reach: lifecycle, the result record, raw bytes, and human-edit
@@ -62,7 +62,7 @@ end
 const CELL_REF_DOC = "A cell NAME (a global it defines, e.g. \"throughput\"), a full UUID, or an unambiguous prefix of one."
 
 const NOTEBOOK_PARAM = ToolParameter(name="notebook", type="string",
-    description="Which open notebook, if more than one is open: its file name. Omit for the current one — the last one opened. See list.",
+    description="Which open notebook, if more than one is open: its file name. Omit for the current one — the last one opened.",
     required=false)
 
 wait_param(default=DEFAULT_WAIT) = ToolParameter(name="wait_seconds", type="number",
@@ -88,7 +88,7 @@ pluto_open = MCPTool(
     name="open",
     description="""Get a notebook: open an existing .jl file, or create a new one with create=true.
 
-Give the returned URL to the user — every later edit appears there live. Name the file after the experiment when the work is meant to be kept; a pathless create is a scratch notebook in a temp directory.
+Give the returned URL to the user — every later edit appears there live. The notebook you open is the current one; later calls default to it, and name any other by its file name. Name the file after the experiment when the work is meant to be kept; a pathless create is a scratch notebook in a temp directory.
 
 Pluto runs cells in DEPENDENCY order and allows one definition of a global per cell, so prefer `x = let ... end` over `begin ... end`. Dependencies install themselves: write `using Plots` in a cell and Pluto records the resolved versions in the notebook file.""",
     parameters=[
@@ -189,18 +189,6 @@ function _open_awaited(s, path::String; wait_seconds)
     istaskdone(task) && istaskfailed(task) && fetch(task)
     (nb, istaskdone(task), time() - t0)
 end
-
-pluto_list = MCPTool(
-    name="list",
-    description="Every open notebook, and which one is current. `open` never closes a previous notebook; other tools default to the current one, and name a notebook by its file name.",
-    parameters=ToolParameter[],
-    handler=(args -> @safely begin
-        s = session(); current = s.current[]
-        _ok([(path=nb.path, cells=length(nb.cells), current = nb.notebook_id == current)
-             for nb in values(s.session.notebooks)])
-    end),
-    return_type=TextContent,
-)
 
 pluto_stop = MCPTool(
     name="stop",
@@ -604,7 +592,7 @@ Omit `cell` and the subject is the NOTEBOOK: `text/html` is the self-contained e
     return_type=Content,
 )
 
-const ALL_TOOLS = [pluto_start, pluto_open, pluto_list, pluto_edit, pluto_run,
+const ALL_TOOLS = [pluto_start, pluto_open, pluto_edit, pluto_run,
                    pluto_read, pluto_output, pluto_bond, pluto_stop]
 
 const SERVER_DESCRIPTION = """
@@ -612,7 +600,7 @@ Author and drive Pluto.jl notebooks: reactive, reproducible, self-contained with
 
 The loop: edit, then check `status`. `success`, proceed. `error`, read the cells and fix. `calculating`, call `read(wait_seconds=N, since=<timestamp from the record>)` — same record. Use `delete_on_success` for anything not worth keeping in the notebook: probes, docstrings, statistics, plots. Prefer `@info` with key-value pairs over `println`; structured entries survive truncation individually.
 
-Every response except `output`, `start`'s host/secret and `list`'s paths is that one record: `status, waited_seconds, timestamp, cells`, where `status` is one of `pending | calculating | success | error` at both levels.
+Every response except `output` and `start`'s host/secret is that one record: `status, waited_seconds, timestamp, cells`, where `status` is one of `pending | calculating | success | error` at both levels.
 """
 
 function build_server()

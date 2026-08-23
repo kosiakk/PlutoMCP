@@ -26,37 +26,33 @@ Corollary: no scratchpad or second eval path (probes are visible cells), no tran
 
 ## Tools
 
-Ten. Signatures are the contract; defaults shown.
+Eight. Signatures are the contract; defaults shown.
 
 ```
-start()
+start(port=nothing)
 open(path=nothing, create=false, wait_seconds=0.1)
-list()
 edit(notebook, cell=nothing, code=nothing, mode="replace", wait_seconds=0.1, delete_on_success=false)
 run(notebook, cells=nothing, wait_seconds=0.1)
 read(notebook, cells=nothing, tree=false, wait_seconds=0.1, since=nothing)
-output(notebook, cell, mime)
+output(notebook, cell=nothing, mime, path=nothing)
 bond(notebook, name, value, wait_seconds=0.1)
-export(notebook, path=nothing)
 stop(notebook=nothing, cell=nothing)
 ```
 
-- `start` / `stop`: lifecycle, scope narrowing with each argument. `stop()` stops everything, `stop(notebook)` shuts one notebook down and sweeps its spill files, `stop(notebook, cell)` interrupts that cell's evaluation (the UI stop button).
+- `start` / `stop`: lifecycle, scope narrowing with each argument. One server per process — no session parameter, since a stdio server has one client. `stop()` stops everything, `stop(notebook)` shuts one notebook down and sweeps its spill files, `stop(notebook, cell)` interrupts that cell's evaluation (the UI stop button).
 - `open`: get a notebook, running it. Pathless create gives an anonymous scratch notebook (Pluto cutename in tempdir); the description tells the agent to name kept work after the experiment. A created notebook is EMPTY — content in it is the agent's, never this package's. Every worker gets the render helper.
-- `list`: open notebooks and their paths.
 - `edit`: `mode` is `replace`, `insert` (after `cell`, or append when `cell=nothing`), or `delete`. A cell whose expression is `md"…"` or `html"…"` is created folded — Pluto's own `code_folded`, persisted in the file as a `# ╟─` line. A display default made where a person would make the same one; it takes no parameter, appears in no record, and one click undoes it. Modes share every other argument, which is why one tool holds them. `delete_on_success=true`: the cell runs normally in the workspace, visible in the browser, and is deleted iff `status` is `success` at return time; otherwise it stays and the agent removes it by the returned id. With `wait_seconds=0` the server returns before witnessing success, so the flag never fires. That return-time deletion is its entire contract.
 - `run`: recompute cells (`cells=nothing` means all). Backup path only: `edit` saves and runs, human browser edits run through Pluto's UI, so `run` exists for cells whose non-reactive inputs changed (files on disk, RNG, env). The from-scratch reproducibility check is `stop` + `open`, not `run`.
 - `read`: snapshot, dependency tree (`tree=true`), wait until nothing is `pending`/`calculating` or a new error appears, changes since a timestamp including human edits. The one status/wait/diff tool.
-- `output`: one cell, in the representation the caller names. `mime` is required — `image/png` (a figure, SVG rasterised on the way out), `text/plain` (the full value, past the record's one-level rule), `text/html` (a markup cell's raw markup). The record already said what the cell stored, so a tool that guesses is a tool that returns markup nobody can read. The only tool whose response is not the record.
+- `output`: one cell — or, with no `cell`, the notebook itself — in the representation the caller names. `mime` is required — `image/png` (a figure, SVG rasterised on the way out), `text/plain` (the full value, past the record's one-level rule), `text/html` (a markup cell's raw markup). The record already said what the cell stored, so a tool that guesses is a tool that returns markup nobody can read. The only tool whose response is not the record.
 - `bond`: set a `@bind` variable and report the cascade.
-- `export`: standalone HTML.
 
 New tools must pass two gates: cells cannot do it, and usage logs show the need.
 Never a discriminator parameter over unrelated operations (`action=...`): `edit`'s modes qualify as one tool only because they share their argument list.
 
 ## One record
 
-Every tool response except `output` bytes, `start` host/secret, and `list` paths parses as the same record:
+Every tool response except `output` and `start` host/secret parses as the same record:
 `status, waited_seconds, timestamp, cells`. `timestamp` is ISO 8601 UTC with milliseconds (`"2026-08-23T18:42:23.788Z"`) — fixed width, so lexicographic order is chronological order; `since` takes it back, and still accepts a float unix time.
 `cells` lists every cell the reactive cascade touched, including clean downstream re-runs.
 
@@ -180,6 +176,10 @@ A post-mortem, so these are not reopened without new evidence. Each entry names 
 **A `cell_type` parameter, wrapping the agent's text in `md"""…"""` for it.** An `.ipynb` reflex: that format has typed cells, and Pluto does not. A Pluto cell is a Julia expression, and prose is the expression `md"""…"""` like any other. The parameter bought one convenience and cost a double-wrap guard, an exception in the code ledger, and a `$`-interpolation surprise in text the agent believed was literal. The agent writes Julia; this package does not edit it.
 
 **A wide-layout cell written into every new notebook.** `html"""<style>main { max-width: 95vw; }</style>"""` is a guess about how a human likes to read, put into their artifact by a package that was not asked. An agent that wants a wide column writes that cell.
+
+**A `list` tool.** It reported which notebooks were open and which was current. The agent lists files itself, `open` says which notebook it just made current, and a `notebook` ref that matches nothing answers with what IS open — the same information, at the moment it is wanted, without a tool to remember.
+
+**An `export` tool.** A notebook rendered as `text/html` is the self-contained export and as `text/plain` is its `.jl` source, so `output` with no `cell` covers it. A separate tool was a second way to ask one question.
 
 **Cell names as identity.** Names are addressing convenience, taken from Pluto's reactivity graph; the UUID is the identity and is always accepted. A cell that stops parsing loses its name, and an identity that disappears when the code breaks is not an identity.
 

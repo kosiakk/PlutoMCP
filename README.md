@@ -115,7 +115,7 @@ plugin is packaging, not a dependency.
 
 ## Tools
 
-Ten. Every capability question has the same answer — *the agent writes a cell* —
+Eight. Every capability question has the same answer — *the agent writes a cell* —
 so tools exist only where cells cannot reach: lifecycle, the result record, raw
 bytes, and human-edit history.
 
@@ -123,13 +123,11 @@ bytes, and human-edit history.
 |---|---|
 | `start` | start a Pluto server in-process |
 | `open` | get a notebook: open a `.jl` file, or `create=true` for a new one |
-| `list` | every notebook this session has open, and which is current |
 | `edit` | insert / replace / delete a cell, save, and run it |
 | `run` | recompute cells whose non-reactive inputs changed (a file, an RNG) — the backup path; `edit` already saves and runs |
 | `read` | cells as they are now: snapshot, dependency tree, wait, changes-since |
-| `output` | one cell's output, in the representation you name: the picture, the full value, or raw markup |
+| `output` | one cell's value — or the whole notebook — as any MIME it renders: a picture, the full text, the self-contained HTML |
 | `bond` | set an `@bind`-ed variable's value, like moving its widget |
-| `export` | self-contained HTML with code and outputs embedded |
 | `stop` | stop the session, one notebook, or one running cell |
 
 Probing a value and reading a docstring are cells (`edit` with
@@ -142,8 +140,8 @@ SPEC.md records why.
 
 ## One record
 
-Every response except `output`'s bytes, `start`'s host/secret and `list`'s
-paths parses as the same record:
+Every response except `output` and `start`'s host/secret parses as the same
+record:
 
 ```json
 {"status": "success", "waited_seconds": 0.4, "timestamp": "2026-08-23T18:42:23.788Z",

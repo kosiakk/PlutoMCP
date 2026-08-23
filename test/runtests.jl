@@ -235,9 +235,10 @@ end
     # comes back complete without a follow-up read.
     @test P.DEFAULT_WAIT > 0
 
-    # Nine tools, exactly these. `export` folded into `output`: a notebook
-    # rendered as text/html IS the self-contained export.
-    @test Set(keys(TOOLS)) == Set(["start", "open", "list", "edit", "run",
+    # Eight tools, exactly these. `export` folded into `output` (a notebook
+    # rendered as text/html IS the export); `list` gone (the agent lists files
+    # itself, and a bad ref names what is open).
+    @test Set(keys(TOOLS)) == Set(["start", "open", "edit", "run",
                                    "read", "output", "bond", "stop"])
     # No tool takes a session: there is one server per process.
     @test !any(p -> p.name == "session", Iterators.flatten(t.parameters for t in P.ALL_TOOLS))
@@ -264,7 +265,6 @@ end
 
     # Started, but nothing open: a clear refusal again.
     @test occursin("no notebook open", call("read").message)
-    @test isempty(call("list"))
 end
 
 @testset "every notebook-taking tool refuses a bad notebook ref cleanly" begin
@@ -1075,12 +1075,13 @@ end
     call("edit", Dict("mode" => "insert",
                       "code" => "which = 2", "wait_seconds" => 60))
 
-    l = call("list", Dict())
-    # Both are listed, exactly one is current, and every entry names a FILE --
-    # a notebook_id is Pluto's internal handle and means nothing to a reader.
-    @test issubset([one.path, two.path], [n.path for n in l])
-    @test count(n -> n.current, l) == 1
-    @test all(n -> haskey(n, :path) && !haskey(n, :notebook_id), l)
+    # A notebook is named by its FILE. There is no tool that lists them:
+    # a ref that matches nothing answers with what IS open, which is the
+    # information at the moment it is wanted.
+    missing_ref = call("read", Dict("notebook" => "nonexistent-xyz.jl"))
+    @test missing_ref.error
+    @test occursin(basename(one.path), missing_ref.message)
+    @test occursin(basename(two.path), missing_ref.message)
 
     # The second open is current; the first is still reachable by path.
     @test cell_output("which") == "2"
@@ -1146,10 +1147,11 @@ end
     two = call("open", Dict("create" => true, "wait_seconds" => 120))
     spill = P.spill_dir(P._notebook())
     mkpath(spill); write(joinpath(spill, "x.txt"), "x")
-    n = length(call("list", Dict()))
+    open_count() = length(P.session().session.notebooks)
+    n = open_count()
     d = call("stop", Dict("notebook" => basename(two.path)))
     @test d.stopped == "notebook"
-    @test length(call("list", Dict())) == n - 1
+    @test open_count() == n - 1
     @test !isdir(spill)
 
     # stop(cell) without a notebook is a refusal, not a guess at which one.

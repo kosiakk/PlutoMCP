@@ -177,9 +177,11 @@ Name the file after the experiment when the work is meant to be kept —
 `open(path="throughput-vs-batch-size.jl", create=true)`. A pathless
 `create` is a scratch notebook in a temp directory.
 
-`export` writes a self-contained HTML file with code and outputs embedded.
-Commit the `.jl` and the `.html` together: that pair is the provenance record,
-and every figure in it traces back to a cell in a notebook that reruns from
-scratch.
+`output(mime="text/html", path="…")` with no `cell` writes a self-contained
+HTML file — the whole notebook, code and outputs embedded, viewable with no
+Pluto server. Commit the `.jl` and the `.html` together: that pair is the
+provenance record, and every figure in it traces back to a cell in a notebook
+that reruns from scratch. (`output(mime="text/plain")` with no cell gives you
+the `.jl` source itself, if you ever want to read the whole file.)
 
 `stop` when you are done, so the server and its worker processes go away.
