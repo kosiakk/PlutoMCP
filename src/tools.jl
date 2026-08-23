@@ -25,6 +25,12 @@ end
 
 _sess(args) = get(args, "session", "default")
 _block(args) = Float64(get(args, "block", 1.0))
+_nbref(args) = get(args, "notebook", nothing)
+_nb(args) = _notebook(_sess(args); ref=_nbref(args))
+
+const NOTEBOOK_PARAM = ToolParameter(name="notebook", type="string",
+    description="Which open notebook, if the session has more than one: a notebook_id, or a path (a basename is usually enough). Omit for the session's current notebook -- the one the most recent open/create selected. See list.",
+    required=false)
 
 """Shape a run result the same way whether it finished inside the deadline or not."""
 function _run_result(nb, targets, finished, waited)
@@ -78,7 +84,7 @@ pluto_open = MCPTool(
     handler=(args -> @safely begin
         name = _sess(args); s = _session(name)
         nb = Pluto.SessionActions.open(s.session, args["path"]; run_async = !get(args, "run", true))
-        s.notebook[] = nb
+        s.current[] = nb.notebook_id
         for c in nb.cells
             _mark_seen!(name, c.cell_id, c.code)
         end
@@ -114,7 +120,7 @@ The first cell is always a `<style>` widening the page: Pluto's fixed-width colu
             joinpath(Pluto.new_notebooks_directory(), String(filename)); suffix=".jl"))
         Pluto.save_notebook(draft)
         nb = Pluto.SessionActions.open(s.session, draft.path; run_async=true)
-        s.notebook[] = nb
+        s.current[] = nb.notebook_id
         for c in nb.cells
             _mark_seen!(name, c.cell_id, c.code)
         end
@@ -136,8 +142,25 @@ pluto_read = MCPTool(
 The notebook object is read directly, so edits a human just made in the browser are already included — there is no cached view to refresh.
 
 Each cell reports a `name` (the global it defines, when Pluto reports one) and a `cell_id`. Either addresses it. Output bodies are described by size, not included; use output or png for one cell's result.""",
+    parameters=[NOTEBOOK_PARAM,
+                ToolParameter(name="session", type="string", description="Which session", required=false, default="default")],
+    handler=(args -> @safely _ok(cells_info(_nb(args)))),
+    return_type=TextContent,
+)
+
+pluto_list = MCPTool(
+    name="list",
+    description="""Every notebook this session has open, and which one is current.
+
+`open`/`create` never close a previously-opened notebook -- a session can have several going at once. Every other tool defaults to the current one; pass `notebook` (a notebook_id, or a path/basename) to target a different one instead.""",
     parameters=[ToolParameter(name="session", type="string", description="Which session", required=false, default="default")],
-    handler=(args -> @safely _ok(cells_info(_notebook(_sess(args))))),
+    handler=(args -> @safely begin
+        name = _sess(args); s = _session(name)
+        current = s.current[]
+        _ok([(notebook_id=string(nb.notebook_id), path=nb.path, cells=length(nb.cells),
+              current = nb.notebook_id == current)
+             for nb in values(s.session.notebooks)])
+    end),
     return_type=TextContent,
 )
 
@@ -154,10 +177,11 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
         ToolParameter(name="edit_mode", type="string", description="\"replace\", \"insert\" or \"delete\"", required=false, default="replace"),
         ToolParameter(name="cell_type", type="string", description="\"code\" or \"markdown\" (markdown wraps the source in md\"\"\")", required=false, default="code"),
         ToolParameter(name="block", type="number", description="Seconds to wait for the run (default 1)", required=false, default=1),
+        NOTEBOOK_PARAM,
         ToolParameter(name="session", type="string", description="Which session", required=false, default="default"),
     ],
     handler=(args -> @safely begin
-        name = _sess(args); s = _session(name); nb = _notebook(name)
+        name = _sess(args); s = _session(name); nb = _nb(args)
         mode = get(args, "edit_mode", "replace")
         code = get(args, "new_source", "")
         get(args, "cell_type", "code") == "markdown" && (code = _wrap_markdown(code))
@@ -184,13 +208,13 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
                 nb.cells_dict[c.cell_id] = c
             end
             _mark_seen!(name, c.cell_id, code)
-            finished, waited = run_with_deadline(name, Pluto.Cell[c]; block=_block(args))
+            finished, waited = run_with_deadline(name, nb, Pluto.Cell[c]; block=_block(args))
             _ok(_run_result(nb, [c], finished, waited))
         else
             c = resolve_cell(nb, ref)
             c.code = code
             _mark_seen!(name, c.cell_id, code)
-            finished, waited = run_with_deadline(name, Pluto.Cell[c]; block=_block(args))
+            finished, waited = run_with_deadline(name, nb, Pluto.Cell[c]; block=_block(args))
             _ok(_run_result(nb, [c], finished, waited))
         end
     end),
@@ -205,13 +229,14 @@ Waits up to `block` seconds. Most cells finish well inside that and come back co
     parameters=[
         ToolParameter(name="cells", type="array", description="Cell references. $CELL_REF_DOC Omit to run the whole notebook.", required=false),
         ToolParameter(name="block", type="number", description="Seconds to wait (default 1). Raise it for a cell you expect to be slow.", required=false, default=1),
+        NOTEBOOK_PARAM,
         ToolParameter(name="session", type="string", description="Which session", required=false, default="default"),
     ],
     handler=(args -> @safely begin
-        name = _sess(args); nb = _notebook(name)
+        name = _sess(args); nb = _nb(args)
         targets = haskey(args, "cells") && args["cells"] !== nothing ?
             Pluto.Cell[resolve_cell(nb, String(r)) for r in args["cells"]] : copy(nb.cells)
-        finished, waited = run_with_deadline(name, targets; block=_block(args))
+        finished, waited = run_with_deadline(name, nb, targets; block=_block(args))
         _ok(_run_result(nb, targets, finished, waited))
     end),
     return_type=TextContent,
@@ -227,10 +252,11 @@ Waits up to `block` seconds for the notebook to go idle, so following up a run t
     parameters=[
         ToolParameter(name="since", type="number", description="Unix time to report changes from; omit for everything recorded", required=false),
         ToolParameter(name="block", type="number", description="Seconds to wait for the notebook to go idle (default 1). Costs nothing when it already is — the wait ends the moment nothing is running. Raise it to follow a long run to completion.", required=false, default=1),
+        NOTEBOOK_PARAM,
         ToolParameter(name="session", type="string", description="Which session", required=false, default="default"),
     ],
     handler=(args -> @safely begin
-        name = _sess(args); nb = _notebook(name)
+        name = _sess(args); nb = _nb(args)
         deadline = time() + _block(args)
         errored_before = Set(c.cell_id for c in nb.cells if c.errored)
         while !isempty(busy_cells(nb)) && time() < deadline &&
@@ -259,10 +285,11 @@ pluto_execute = MCPTool(
 For probing values that don't belong in the saved notebook: `@doc sym`, `methods(f)`, `typeof(x)`, `size(M)`, checking a variable before committing to a cell that uses it. Runs in the same workspace `edit`/`run` use, so every notebook variable, `using`d package, and `include`d function is in scope. Nothing is saved and no cell is added or changed.""",
     parameters=[
         ToolParameter(name="expr", type="string", description="A single Julia expression, as it would appear inside a cell", required=true),
+        NOTEBOOK_PARAM,
         ToolParameter(name="session", type="string", description="Which session", required=false, default="default"),
     ],
     handler=(args -> @safely begin
-        name = _sess(args); s = _session(name); nb = _notebook(name)
+        name = _sess(args); s = _session(name); nb = _nb(args)
         parsed = try
             Meta.parse(String(args["expr"]))
         catch e
@@ -286,10 +313,11 @@ Images come back viewable. SVG is withheld by default — a plot is ~100 KB of m
     parameters=[
         ToolParameter(name="cell_id", type="string", description=CELL_REF_DOC, required=true),
         ToolParameter(name="raw", type="boolean", description="Return an SVG result's full markup", required=false, default=false),
+        NOTEBOOK_PARAM,
         ToolParameter(name="session", type="string", description="Which session", required=false, default="default"),
     ],
     handler=(args -> @safely begin
-        nb = _notebook(_sess(args)); c = resolve_cell(nb, args["cell_id"])
+        nb = _nb(args); c = resolve_cell(nb, args["cell_id"])
         mime = string(c.output.mime); body = c.output.body
         astext(b) = b isa Vector{UInt8} ? String(copy(b)) : string(b)
         # Structured errors: Pluto already hands these back as a Dict, so pass
@@ -320,10 +348,11 @@ pluto_png = MCPTool(
     description="Render a plotting cell as a PNG, whatever its native output format (Plots.jl or Makie). For a NAMED cell (one that defines a single global, e.g. `fig = plot(...)`), renders that existing global -- no re-run, no risk of a 'multiple definitions' error. An unnamed cell is re-run inside a temporary probe, which is always removed. Cheap for a plot, wasteful if the cell also does expensive work.",
     parameters=[
         ToolParameter(name="cell_id", type="string", description=CELL_REF_DOC, required=true),
+        NOTEBOOK_PARAM,
         ToolParameter(name="session", type="string", description="Which session", required=false, default="default"),
     ],
     handler=(args -> @safely begin
-        name = _sess(args); s = _session(name); nb = _notebook(name)
+        name = _sess(args); s = _session(name); nb = _nb(args)
         c = resolve_cell(nb, args["cell_id"])
         label = cell_labels(nb)[string(c.cell_id)]
         named = label != string(c.cell_id)
@@ -381,10 +410,11 @@ pluto_export = MCPTool(
 Commit the `.jl` and the exported `.html` together — that pair is the provenance record: every figure traces back to a cell in a notebook that reruns from scratch.""",
     parameters=[
         ToolParameter(name="path", type="string", description="Output .html path (default: the notebook's path with .jl replaced by .html)", required=false),
+        NOTEBOOK_PARAM,
         ToolParameter(name="session", type="string", description="Which session", required=false, default="default"),
     ],
     handler=(args -> @safely begin
-        nb = _notebook(_sess(args))
+        nb = _nb(args)
         html = Pluto.generate_html(nb)
         out = get(args, "path", nothing)
         out = out === nothing ? (splitext(nb.path)[1] * ".html") : String(out)
@@ -404,7 +434,7 @@ pluto_stop = MCPTool(
     return_type=TextContent,
 )
 
-const ALL_TOOLS = [pluto_start, pluto_open, pluto_create, pluto_read, pluto_edit,
+const ALL_TOOLS = [pluto_start, pluto_open, pluto_create, pluto_list, pluto_read, pluto_edit,
                    pluto_run, pluto_status, pluto_execute, pluto_output, pluto_png,
                    pluto_export, pluto_stop]
 

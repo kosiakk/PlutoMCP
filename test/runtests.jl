@@ -362,6 +362,33 @@ end
     @test call("output", Dict("session" => S, "cell_id" => "doubled")).body == "42"
 end
 
+@testset "multiple notebooks per session" begin
+    first_path = P._notebook(S).path        # the session's notebook so far
+
+    other = P.notebook_source(["z = 100"])
+    other.path = tempname() * ".jl"
+    Pluto.save_notebook(other)
+    r = call("open", Dict("session" => S, "path" => other.path, "block" => 60))
+    second_path = r.path
+
+    # open must not have replaced the first notebook -- both are listed.
+    ls = call("list", Dict("session" => S))
+    paths = Set(String(x.path) for x in ls)
+    @test first_path in paths
+    @test second_path in paths
+    @test count(x -> x.current, ls) == 1
+    @test only(x for x in ls if x.current).path == second_path
+
+    # The first notebook is still reachable by path, even though it is no
+    # longer current -- read/output default to current but accept `notebook`.
+    @test call("output", Dict("session" => S, "cell_id" => "doubled",
+                              "notebook" => first_path)).body == "42"
+    @test call("output", Dict("session" => S, "cell_id" => "z")).body == "100"  # current
+
+    @test call("output", Dict("session" => S, "cell_id" => "z",
+                              "notebook" => "nonexistent-xyz.jl")).error
+end
+
 @testset "stop" begin
     # Each open notebook owns a worker process; stop must not just close the
     # HTTP server and leave those running.

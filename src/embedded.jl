@@ -125,7 +125,11 @@ function start_session(name::AbstractString; port::Union{Nothing,Int}=nothing)
     session = Pluto.ServerSession(; options)
     server = Pluto.run!(session)
     SESSIONS[nm] = (host="localhost:$port", secret=session.secret,
-                    session=session, server=server, notebook=Ref{Any}(nothing))
+                    session=session, server=server,
+                    # Every open notebook is already tracked by
+                    # session.notebooks (Pluto's own Dict{UUID,Notebook}); this
+                    # is only which one a `session`-only tool call means.
+                    current=Ref{Union{Nothing,Base.UUID}}(nothing))
     return SESSIONS[nm]
 end
 
@@ -152,11 +156,33 @@ function _session(name::AbstractString)
     return SESSIONS[String(name)]
 end
 
-function _notebook(name::AbstractString)
-    nb = _session(name).notebook[]
-    nb === nothing &&
-        error("session \"$name\" has no notebook — call open or create first")
-    return nb
+"""
+    _notebook(name; ref=nothing) -> Pluto.Notebook
+
+Resolve which of the session's open notebooks a tool call means. Every
+notebook the session has open is already in `s.session.notebooks`
+(Pluto's own registry, keyed by notebook_id) -- `open`/`create` never
+replaced anything there, only our own single-notebook `Ref` did.
+
+`ref` is a notebook_id, a path (or an unambiguous suffix of one, so a
+basename is usually enough), or `nothing` for the session's CURRENT
+notebook -- the one the most recent `open`/`create` selected, matching the
+single-notebook behavior every other tool call defaults to.
+"""
+function _notebook(name::AbstractString; ref::Union{Nothing,AbstractString}=nothing)
+    s = _session(name)
+    if ref === nothing
+        id = s.current[]
+        id === nothing &&
+            error("session \"$name\" has no notebook — call open or create first")
+        return s.session.notebooks[id]
+    end
+    id = tryparse(Base.UUID, ref)
+    id !== nothing && haskey(s.session.notebooks, id) && return s.session.notebooks[id]
+    hits = [nb for nb in values(s.session.notebooks) if endswith(nb.path, ref)]
+    length(hits) == 1 && return only(hits)
+    length(hits) > 1 && error("\"$ref\" matches $(length(hits)) open notebooks in session \"$name\"")
+    error("no open notebook matches \"$ref\" in session \"$name\" — see list")
 end
 
 notebook_url(s, nb) = "http://$(s.host)/edit?id=$(nb.notebook_id)&secret=$(s.secret)"
@@ -259,14 +285,14 @@ cells_info(nb::Pluto.Notebook) =
 # ------------------------------------------------------------------ writing --
 
 """Run `cells` synchronously: save the file, push patches to every browser, return when done."""
-function run_cells!(name::AbstractString, cells::Vector{Pluto.Cell}; save::Bool=true)
-    s = _session(name); nb = _notebook(name)
+function run_cells!(name::AbstractString, nb::Pluto.Notebook, cells::Vector{Pluto.Cell}; save::Bool=true)
+    s = _session(name)
     isempty(cells) || Pluto.update_save_run!(s.session, nb, cells; run_async=false, save)
     return nb
 end
 
 """
-    run_with_deadline(name, cells; block=1.0) -> (finished::Bool, waited)
+    run_with_deadline(name, nb, cells; block=1.0) -> (finished::Bool, waited)
 
 Start `cells` and wait up to `block` seconds for them to finish.
 
@@ -285,9 +311,9 @@ This is bounded by Pluto running a notebook's cells sequentially in one worker.
 An error cannot be reported before the cell producing it has had its turn, so a
 long-running cell ahead of it in the queue still has to finish first.
 """
-function run_with_deadline(name::AbstractString, cells::Vector{Pluto.Cell};
+function run_with_deadline(name::AbstractString, nb::Pluto.Notebook, cells::Vector{Pluto.Cell};
                            block::Real=1.0, save::Bool=true)
-    s = _session(name); nb = _notebook(name)
+    s = _session(name)
     isempty(cells) && return (true, 0.0)
 
     # Timestamps are taken BEFORE starting. "Not busy" alone is not evidence of

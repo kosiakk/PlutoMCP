@@ -96,6 +96,7 @@ claude mcp add pluto -- julia --project=$HOME/Documents/PlutoMCP \
 | `start` | start a Pluto server in-process |
 | `open` | open an existing `.jl` notebook |
 | `create` | author a whole notebook in one call |
+| `list` | every notebook this session has open, and which is current |
 | `read` | list cells as they are now; runs nothing |
 | `edit` | replace / insert / delete a cell, then run it |
 | `run` | run cells |
