@@ -212,7 +212,14 @@ end
         push!(ids, r.cells[1].cell_id)
     end
     @test length(unique(ids)) == 10
-    @test length(unique(first(id, 4) for id in ids)) == 10   # prefixes stay discriminating
+    # A uuid1 id is time-based: ten made a moment apart share a long leading
+    # run of digits (this is what the bug looked like). Genuinely random
+    # uuid4 ids can still share a short prefix by chance -- rare, but not the
+    # near-certainty a real uuid1 collision would be -- so check a length
+    # generous enough (8 hex chars, ~1 in 4 billion per pair) to tell "random"
+    # from "systematically clustered" apart, rather than assert no two of ten
+    # random ids ever share their first 4.
+    @test length(unique(first(id, 8) for id in ids)) == 10
 
     for id in ids
         call("edit", Dict("session" => S, "cell_id" => id, "edit_mode" => "delete"))
