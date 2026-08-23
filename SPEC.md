@@ -76,14 +76,23 @@ Polling through the loop is the notification mechanism: no server push.
 Each cell entry carries: identity, `status`, `code`, runtime, rendered output, structured log entries (last 20, overflow counted and spilled), error message if any.
 A cell the human deleted is synthesised into the record — `change="deleted"`, `old_code` — since there is no live cell left to render it from. It is deduped like any other entry, so a deletion is news exactly once; it never lands on a targeted read, which answers only for the cells it was asked about.
 
-Output rendering:
-- Text: inline up to 2 KB; larger becomes head 1 KB + tail 1 KB + spill file path.
-- Homogeneous containers: Pluto's one-line sketch (length, eltype, head … tail). No expansion protocol; the agent's expand is a probe cell.
-- Structs and heterogeneous tuples: one level of fields, no recursion.
-- HTML (a markdown cell's rendering included): MIME alone. A markdown or `html"…"` cell's rendering IS the code the agent wrote, re-encoded; its extracted text is that same prose with the formatting removed. Neither is worth a token. An interpolated value needs no special case: the fingerprint covers the rendered body, so the cell re-reports when the value moves, and `output` is there to be asked.
-- Binary: MIME alone. The picture itself comes from `output`, as MCP image content; a byte count is a number nobody can look at.
+## Two renderers, and one exception each
 
-One rule underneath both: **text the agent supplied never comes back**. `code` is dropped when the session already holds it, and an `output` whose text hashes into that same set of held code is dropped with it. Static markup is the case where a cell's output and its input are the same thing by construction.
+**The record is Pluto's rendering. `output` is Julia's.** Neither is this package's.
+
+Pluto already decided how a value should be summarised for someone who cannot hold it all at once — length and eltype, a head and a tail, a table's schema and row count, a struct's fields one level down. Those are good decisions made by people who watched humans read notebooks for years, and the record piggybacks on them rather than competing. What this package adds is a line's worth of formatting and one truncation door; there is no second display protocol, and there is no "but complete" mode on a summary. A summary that grows until it is complete is not a summary.
+
+`output` is the other question — *what is this value, exactly* — and Julia already answers it: `show(io, MIME"text/plain"(), x)` is the `display` form, and `IOContext(:limit => false)` turns off the elision the REPL adds for its own comfort. So `output` fetches the value from the worker by `cell_id` (`PlutoRunner.cell_results`, so a cell that defines no name is as readable as a global) and prints it exactly as Julia would. Not our formatting of Pluto's summary of Julia's value — Julia's own.
+
+**The plot is the exception on both sides, and only because MIME preference is not the agent's.** Pluto stores one rendered MIME per cell and prefers SVG whenever a backend offers both; SVG is markup no MCP client can show. So the record says `mime` and stops (a picture is not describable in words, and a byte count is a number nobody can look at), and `output` asks the figure's own library for a PNG. `AsPNG` exists for exactly this and nothing else.
+
+Everything else follows:
+- Text: inline up to 2 KB; larger spills to a file and the payload names the path. One door, every path.
+- Containers, structs, tables: Pluto's summary, one line, one level deep. Expanding is `output`, or a probe cell (`x[4090:4110]`).
+- HTML — a markdown or `html"…"` cell — is `mime` alone in the record. Its rendering IS the code the agent wrote, re-encoded, and its extracted text is that same prose with the formatting removed. `output` needs no case for it either: the cell's *value* is a `Markdown.MD`, which Julia prints as text on its own.
+- A cell that errored has no value to fetch, so its message comes from the structure Pluto stored. That is the only place `output` reads a rendering rather than a value.
+
+One rule underneath the record: **text the agent supplied never comes back**. `code` is dropped when the session already holds it, and an `output` whose text hashes into that same set of held code is dropped with it. Static markup is the case where a cell's output and its input are the same thing by construction.
 
 ## One vocabulary
 

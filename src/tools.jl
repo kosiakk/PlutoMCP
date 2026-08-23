@@ -8,6 +8,17 @@ cells cannot reach: lifecycle, the result record, raw bytes, and human-edit
 history. A new tool has to pass both gates: cells cannot do it, and usage shows
 the need.
 
+Two renderers, and neither of them is this package:
+
+  the record   is PLUTO's rendering -- its summary of a value, one line, one
+               level deep (see render.jl)
+  `output`     is JULIA's -- `show(io, MIME"text/plain"(), x)` with the REPL's
+               elision turned off, on the value itself, fetched from the worker
+
+The plot is the exception on both sides, and only because Pluto stores one MIME
+per cell and prefers SVG, which no MCP client can show: the record says `mime`
+and stops, and `output` asks the figure's own library for a PNG.
+
 One vocabulary, no synonyms:
 
   wait_seconds     how long to wait, on every tool that runs or waits
@@ -507,33 +518,27 @@ function _tree_of(nb, c::Pluto.Cell, labels)
      downstream = bylabel(Pluto.downstream_cells_map(c, nb.topology)))
 end
 
-const RASTER_MIMES = Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"])
-
 """
-    _render_png(session_name, nb, label) -> Union{Nothing,Vector{UInt8}}
+    _from_worker(session_name, nb, c, call) -> Union{Nothing,Any}
 
-Ask the notebook's own plotting library to rasterise the figure a cell already
-rendered as markup. Best effort, and `nothing` is a perfectly good answer: the
-caller has a hint to fall back on.
+Ask the notebook's worker for something about cell `c`'s VALUE.
 
-Three ways this declines, all of them on purpose:
+The value lives in the worker; Pluto keeps only its rendering. `output` is the
+one tool that wants the thing itself, so it asks -- by cell_id, which every
+cell has, rather than by a variable name, which most do not.
 
-  - the cell defines no global, so there is no figure to name. Pluto stores the
-    RENDERED body, not the object, and re-running the cell to get one back
-    would make `output` a thing that executes code.
-  - the notebook is busy. `output` is a read, and a read must not queue behind
-    the run it might have been called to look at.
-  - the figure cannot show itself as PNG and its library has no savefig/save.
+`nothing` is a real answer, and there are exactly two ways to get it: the
+notebook is busy (a read must not queue behind the run it was called to look
+at), or the worker could not produce it. The caller turns either into a
+message; neither is worth failing over.
 """
-function _render_png(session_name, nb::Pluto.Notebook, label::AbstractString)
-    Base.isidentifier(label) || return nothing
+function _from_worker(session_name, nb::Pluto.Notebook, c::Pluto.Cell, call::Symbol)
     isempty(busy_cells(nb)) || return nothing
     s = _session(session_name)
     ensure_helpers!(s.session, nb)
     try
-        bytes = Pluto.WorkspaceManager.eval_fetch_in_workspace((s.session, nb),
-            :(Main.PlutoMCP.png_bytes($(Symbol(label)))))
-        bytes isa Vector{UInt8} && !isempty(bytes) ? bytes : nothing
+        Pluto.WorkspaceManager.eval_fetch_in_workspace((s.session, nb),
+            :(Main.PlutoMCP.$call($(string(c.cell_id)))))
     catch
         nothing
     end
@@ -541,76 +546,54 @@ end
 
 pluto_output = MCPTool(
     name="output",
-    description="""One cell's output, in the representation you ask for. `mime` says which, and it is required — the record already told you what the cell stored, and a tool that guesses is a tool that hands back markup nobody can read.
+    description="""One cell's value, complete, in the representation you name.
 
-`image/png` — the picture. A figure Pluto stored as SVG is asked for a PNG rather than handed over as markup; an oversize raster spills to a file and the path is returned.
-`text/plain` — the full text where the record carried a sketch, expanded past the one-level rule. Oversize text spills to a file; read or grep it directly.
-`text/html` — the raw markup of a markdown or `html\"…\"` cell. Rarely worth it: that cell's rendering is the text you wrote, which is why the record omits it.""",
+`text/plain` is the value as Julia itself prints it, with nothing elided — the record only ever carries a summary. `image/png` is the picture, including a figure Pluto stored as SVG, which is asked for a PNG rather than handed over as markup.
+
+Either one spills to a file when it is too big to carry, and the path comes back instead — read or grep it directly. The value is read from the worker, so this never re-runs anything, and a busy notebook is asked to wait rather than queued behind.""",
     parameters=[
         ToolParameter(name="cell", type="string", description=CELL_REF_DOC, required=true),
-        ToolParameter(name="mime", type="string", description="What to return: \"image/png\" for a figure, \"text/plain\" for the full text of a value, \"text/html\" for a markup cell's raw markup.", required=true),
+        ToolParameter(name="mime", type="string", description="\"text/plain\" for the value as text, \"image/png\" for a figure.", required=true),
         NOTEBOOK_PARAM,
         SESSION_PARAM,
     ],
     handler=(args -> @safely begin
         nb = _nb(args); c = resolve_cell(nb, String(args["cell"]))
         label = cell_labels(nb)[string(c.cell_id)]
-        mime = string(c.output.mime); body = c.output.body
         want = String(args["mime"])
-        want in ("image/png", "text/plain", "text/html") ||
-            error("mime: expected \"image/png\", \"text/plain\" or \"text/html\", got \"$want\"")
+        want in ("text/plain", "image/png") ||
+            error("mime: expected \"text/plain\" or \"image/png\", got \"$want\"")
+
+        # A cell that failed has no value to fetch: the error IS its result, and
+        # the record already put it in structured form.
+        if c.errored
+            return _ok((cell=label, status="error",
+                        error=truncate_payload(_error_text(c); nb, label, kind="error")))
+        end
 
         if want == "image/png"
-            startswith(mime, "image/") ||
-                error("$label stored $mime, which is not a figure — ask for text/plain")
-            # Raster passes through; anything else (SVG above all) is markup,
-            # and markup of a picture is the one text worth nobody's bytes.
-            if body isa Vector{UInt8} && mime in RASTER_MIMES
-                # An image bigger than a comfortable payload is worth a path
-                # instead: the client and the server share a machine.
-                if length(body) > 1_000_000
-                    dir = spill_dir(nb); mkpath(dir)
-                    path = joinpath(dir, "$(_slug(label))-output." * last(split(mime, "/")))
-                    write(path, body)
-                    return _ok((cell=label, mime=mime, path=path))
-                end
-                return ImageContent(data=body, mime_type=mime)
-            end
-            png = _render_png(_sess(args), nb, label)
-            png === nothing || return ImageContent(data=png, mime_type="image/png")
-            return _ok((cell=label, mime=mime,
-                        hint="Rendering $label as PNG failed, or the notebook was " *
-                             "busy. `PlutoMCP.AsPNG($label)` in a delete_on_success " *
-                             "cell does the same thing from inside the notebook."))
-        elseif want == "text/html"
-            mime == "text/html" ||
-                error("$label stored $mime, not text/html")
-            return _ok((cell=label, mime=mime, status=cell_status(c),
-                        output=truncate_payload(body isa AbstractString ? body : string(body);
-                                                nb, label, kind="html")))
+            png = _from_worker(_sess(args), nb, c, :png_of)
+            png isa Vector{UInt8} && !isempty(png) || return _ok((cell=label,
+                mime=string(c.output.mime),
+                hint="Could not render $label as a PNG: it is not a figure, its " *
+                     "library offers no PNG, or the notebook was busy."))
+            # Bigger than a comfortable payload is worth a path instead: the
+            # client and the server share a machine.
+            length(png) > 1_000_000 || return ImageContent(data=png, mime_type="image/png")
+            dir = spill_dir(nb); mkpath(dir)
+            path = joinpath(dir, "$(_slug(label))-output.png")
+            write(path, png)
+            return _ok((cell=label, mime="image/png", path=path))
         end
-        startswith(mime, "image/") &&
-            error("$label is a figure ($mime) — ask for image/png")
-        mime == "text/html" &&
-            error("$label rendered to markup. Its text is the markdown you wrote, " *
-                  "which you already have as `code`; ask for text/html for the markup itself.")
-        text = body isa AbstractDict ? _full_text(body, mime) :
-               body isa Vector{UInt8} ? String(copy(body)) :
-               body === nothing ? "" : string(body)
-        _ok((cell=label, mime=mime, status=cell_status(c),
+
+        text = _from_worker(_sess(args), nb, c, :full_text)
+        text isa AbstractString ||
+            error("could not read $label's value — the notebook is busy, or the cell has not run")
+        _ok((cell=label, mime="text/plain", status=cell_status(c),
              output=truncate_payload(text; nb, label, kind="full")))
     end),
     return_type=Content,
 )
-
-# The record renders a container as a one-line sketch, head and tail only;
-# `output` renders every element Pluto stored. That is as complete as complete
-# gets: the value itself lives in the worker, and this tool never re-executes a
-# cell to go and ask it. For more than Pluto kept, the agent writes a cell.
-_full_text(body::AbstractDict, mime::AbstractString) =
-    mime == "application/vnd.pluto.parseerror+object" ? _parse_error_text(body) :
-    mime == "application/vnd.pluto.stacktrace+object" ? _stacktrace_text(body) :
-    sketch(body; full=true)
 
 pluto_export = MCPTool(
     name="export",

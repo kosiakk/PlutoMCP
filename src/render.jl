@@ -1,7 +1,19 @@
 #=
 Everything that turns a live `Pluto.Cell` into the record the agent reads.
 
-Two rules govern this file.
+**The record is Pluto's rendering.** Pluto already decided how to summarise a
+value for a reader who cannot hold it all at once: length and eltype, a head
+and a tail, a table's schema and row count, a struct's fields one level down.
+Those decisions came from watching people read notebooks, and this file
+piggybacks on them rather than competing. Its own contribution is a line's
+worth of formatting: Pluto's tree/table objects are structured data built for
+an expandable frontend viewer, and `string()` on one is a page of Dict syntax
+that says less than one honest line.
+
+So `sketch` renders ONE line, one level deep, and never recurses -- and there
+is no "but complete" mode on it, because a summary that grows until it is
+complete is not a summary. The complete value is `output`'s job, and `output`
+asks Julia (see tools.jl), which is the only place a complete answer lives.
 
 **One truncation function.** Every path that puts text into an MCP payload goes
 through `truncate_payload`. Not "most paths": a single 40 MB `println` blob is
@@ -9,12 +21,6 @@ enough to blow a context window, and the only way to be sure is to have one
 door. Oversize text spills to a file and the payload names the path — the
 client and the server share a machine (stdio transport), and Claude Code reads
 and greps a local file better than any paging protocol could.
-
-**Sketches, not dumps.** Pluto's own tree/table objects are structured data,
-built for its frontend's expandable viewer. Rendering them with `string()`
-produces a page of Dict syntax that says less than one honest line. `sketch`
-renders one line instead, one level deep, and never recurses. Expanding is not
-a protocol here: the agent writes `x[4090:4110]` in a throwaway cell.
 =#
 
 # --------------------------------------------------------------- truncation --
@@ -98,13 +104,11 @@ _is_more(e) = e isa AbstractString && e == "more"
 
 """Render `[a, b, …, y, z]` from already-formatted element strings.
 
-`full` keeps every element Pluto sent instead of trimming to head and tail. The
-record wants one line; `output` wants everything there is, and everything there
-is means the elements Pluto chose to store, since the value itself lives in the
-worker.
+One line, always: this is the record's summary of a container, and the
+complete value is `output`'s job.
 """
-function _joined(vals::Vector{String}, truncated::Bool; full::Bool=false)
-    if !full && length(vals) > SKETCH_HEAD + SKETCH_TAIL
+function _joined(vals::Vector{String}, truncated::Bool)
+    if length(vals) > SKETCH_HEAD + SKETCH_TAIL
         # When Pluto ALREADY truncated, the elements it sent are a head plus the
         # container's real last one. Trimming a "tail" off that head puts
         # elements 7 and 8 next to element 20 and calls them the end of the
@@ -126,22 +130,15 @@ one-line sketch at depth+1, and anything deeper than that is `…`. This is the
 "one level of fields, no recursion" rule, enforced by construction rather than
 by hoping the data is shallow.
 
-`full` is `output` asking for everything, and it lifts the depth rule as well
-as the element trim — otherwise `(trimmed = (est = 0.94, ci = …))` is all
-`output` can ever say about a nested result, which is exactly what the record
-already said. `MAX_FULL_DEPTH` still stops it: Pluto's own tree is depth
-limited, and an unbounded walk is a promise this cannot keep.
+There is no deeper mode. A summary that grows until it is complete is not a
+summary; `output` fetches the value itself from the worker, which is the only
+place a complete answer exists.
 """
-const MAX_FULL_DEPTH = 4
-
-function _leaf(x, depth::Int; full::Bool=false)
+function _leaf(x, depth::Int)
     _is_more(x) && return "…"
     if x isa Tuple && length(x) == 2
         body, _ = x
-        if body isa AbstractDict
-            deep = full ? depth >= MAX_FULL_DEPTH : depth >= 1
-            return deep ? "…" : sketch(body, depth + 1; full)
-        end
+        body isa AbstractDict && return depth >= 1 ? "…" : sketch(body, depth + 1)
         return body isa AbstractString ? body : string(body)
     end
     string(x)
@@ -164,7 +161,7 @@ At depth 0 it reads as a description: type, count, head … tail. Nested one
 level in it collapses to Julia's own array-literal shape (`Float64[1.0, 2.0]`),
 which stays readable inside a struct's field list. There is no depth 2.
 """
-function sketch(b::AbstractDict, depth::Int=0; full::Bool=false)
+function sketch(b::AbstractDict, depth::Int=0)
     t = get(b, :type, nothing)
     t === :circular && return "#= circular reference =#"
     haskey(b, :rows) && return _sketch_table(b)
@@ -174,27 +171,27 @@ function sketch(b::AbstractDict, depth::Int=0; full::Bool=false)
     shown = [e for e in els if !_is_more(e)]
 
     if t === :Array || t === :Set
-        vals = String[_leaf(e isa Tuple ? last(e) : e, depth; full) for e in shown]
+        vals = String[_leaf(e isa Tuple ? last(e) : e, depth) for e in shown]
         depth >= 1 && return string(rstrip(String(get(b, :prefix, "")), [' ', ':']),
-                                    "[", _joined(vals, truncated; full), "]")
+                                    "[", _joined(vals, truncated), "]")
         return string(_container_type(b), ", ", _count(length(shown), truncated),
-                      ": [", _joined(vals, truncated; full), "]")
+                      ": [", _joined(vals, truncated), "]")
     elseif t === :Dict
         # elements are ((keybody, keymime), (valbody, valmime))
-        vals = String[string(_leaf(first(e), depth; full), " => ", _leaf(last(e), depth; full))
+        vals = String[string(_leaf(first(e), depth), " => ", _leaf(last(e), depth))
                       for e in shown if e isa Tuple]
-        depth >= 1 && return string("Dict(", _joined(vals, truncated; full), ")")
+        depth >= 1 && return string("Dict(", _joined(vals, truncated), ")")
         return string(_container_type(b), ", ", _count(length(shown), truncated; unit="entries"),
-                      ": {", _joined(vals, truncated; full), "}")
+                      ": {", _joined(vals, truncated), "}")
     elseif t === :Tuple
-        return string("(", _joined(String[_leaf(last(e), depth; full) for e in shown if e isa Tuple],
-                                   truncated; full), ")")
+        return string("(", _joined(String[_leaf(last(e), depth) for e in shown if e isa Tuple],
+                                   truncated), ")")
     elseif t === :NamedTuple
-        return string("(", join(String[string(first(e), " = ", _leaf(last(e), depth; full))
+        return string("(", join(String[string(first(e), " = ", _leaf(last(e), depth))
                                        for e in shown if e isa Tuple], ", "), ")")
     elseif t === :struct
         return string(get(b, :prefix_short, get(b, :prefix, "struct")), "(",
-                      join(String[string(first(e), " = ", _leaf(last(e), depth; full))
+                      join(String[string(first(e), " = ", _leaf(last(e), depth))
                                   for e in shown if e isa Tuple], ", "), ")")
     elseif t === :Pair
         kv = get(b, :key_value, nothing)
@@ -358,10 +355,8 @@ function render_output(nb::Pluto.Notebook, c::Pluto.Cell, label::AbstractString)
     body = c.output.body
     short(t) = truncate_payload(t; nb, label)
 
-    if mime == "application/vnd.pluto.parseerror+object"
-        return (mime = mime, error = short(_parse_error_text(body)))
-    elseif mime == "application/vnd.pluto.stacktrace+object"
-        return (mime = mime, error = short(_stacktrace_text(body)))
+    if mime in ERROR_MIMES
+        return (mime = mime, error = short(_error_text(c)))
     elseif body isa AbstractDict
         return (mime = mime, output = short(sketch(body)))
     elseif mime == "text/html"
@@ -385,6 +380,21 @@ function render_output(nb::Pluto.Notebook, c::Pluto.Cell, label::AbstractString)
     end
     (mime = mime, output = short(body isa AbstractString ? body : string(body)))
 end
+
+# The two mimes Pluto uses for a cell that failed. Both carry structure, and
+# both become one message: an agent reads a message, never a Dict dump.
+const ERROR_MIMES = Set(["application/vnd.pluto.parseerror+object",
+                         "application/vnd.pluto.stacktrace+object"])
+
+"""
+    _error_text(c) -> String
+
+A failed cell's message. The one thing `output` cannot fetch from the worker,
+because a cell that errored produced no value — the error IS its result.
+"""
+_error_text(c::Pluto.Cell) =
+    string(c.output.mime) == "application/vnd.pluto.parseerror+object" ?
+        _parse_error_text(c.output.body) : _stacktrace_text(c.output.body)
 
 _parse_error_text(body) = body isa AbstractDict ?
     join([string(get(d, :message, get(d, "message", "syntax error")),

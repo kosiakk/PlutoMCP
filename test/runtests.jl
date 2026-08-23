@@ -193,18 +193,6 @@ end
     # 20 and call them the end of the array -- short is fine, wrong is not.
     long = arr("Int64", [0, 1, 2, 3, 4, 5, 6, 7, 8, 20]; more=true)
     @test P.sketch(long) == "Vector{Int64}, ≥10 elements: [0, 1, 2, 3, 4, 5, …, 20]"
-    @test P.sketch(long; full=true) == "Vector{Int64}, ≥10 elements: [0, 1, 2, 3, 4, 5, 6, 7, 8, …, 20]"
-
-    # `output` asking for everything lifts the depth rule too, or a nested
-    # result can never be read at all -- the record already said `ci = …`.
-    inner = arr("Float64", [0.27, 1.63])
-    nested_ci = Dict{Symbol,Any}(:type => :NamedTuple, :prefix => "", :prefix_short => "",
-        :elements => Any[(:est, ("0.94", MIME"text/plain"())),
-                         (:ci, (inner, MIME"application/vnd.pluto.tree+object"()))])
-    outer = Dict{Symbol,Any}(:type => :NamedTuple, :prefix => "", :prefix_short => "",
-        :elements => Any[(:trimmed, (nested_ci, MIME"application/vnd.pluto.tree+object"()))])
-    @test P.sketch(outer) == "(trimmed = (est = 0.94, ci = …))"
-    @test P.sketch(outer; full=true) == "(trimmed = (est = 0.94, ci = Float64[0.27, 1.63]))"
 
     @test P.sketch(Dict{Symbol,Any}(:type => :circular)) == "#= circular reference =#"
     # An unfamiliar tree type is summarised, never dumped.
@@ -758,17 +746,23 @@ end
     @test !occursin("\n", sketched)              # one line for 100k elements
     @test length(sketched) < 400
 
-    # `output` gives every element Pluto stored -- more than the sketch, and
-    # still not a dump of Pluto's own Dict.
+    # `output` is the VALUE, as Julia prints it, fetched from the worker --
+    # 100k elements is far past the inline limit, so it spills and names a path.
     full = cell_output(S, "vec")
-    @test occursin("Vector{Float64}", full)
-    @test length(full) > length(sketched)
-    @test !occursin("MIME type", full)
+    # The exact spelling is Julia's business -- Vector{Float64} or
+    # Array{Float64, 1} -- and pinning it here would be this suite deciding
+    # something the principle says it does not decide.
+    @test occursin("100000-element", full) && occursin("Float64", full)
+    @test occursin("full output:", full)
+    path = match(r"full output: ([^)]+)\)", full)[1]
+    @test isfile(path)
+    @test occursin("100000.0", read(path, String))       # the real last element
     @test !occursin("Dict{Symbol", full)
 
     call("edit", Dict("session" => S, "mode" => "insert",
                       "code" => "tup = (x=1, y=\"two\", z=[1,2,3])", "wait_seconds" => 60))
-    @test cell_output(S, "tup") == "(x = 1, y = \"two\", z = Int64[1, 2, 3])"
+    # Julia's own printing, not our sketch: nested containers are complete.
+    @test cell_output(S, "tup") == "(x = 1, y = \"two\", z = [1, 2, 3])"
 
 end
 
@@ -783,16 +777,13 @@ end
     @test !haskey(c, :output)            # not the markup, and not its text either
     @test !haskey(c, :code)              # the caller wrote it; it is not read back
 
-    # The markup is still reachable, for the one caller who wants it.
-    raw = call("output", Dict("session" => S, "cell" => String(c.cell_id),
-                              "mime" => "text/html"))
-    @test occursin("<h1", raw.output)
-    @test occursin("5", raw.output)      # the interpolation did run
-
-    # text/plain on a markup cell is refused, with the reason.
-    refused = call("output", Dict("session" => S, "cell" => String(c.cell_id),
-                                  "mime" => "text/plain"))
-    @test refused.error && occursin("markup", refused.message)
+    # ...and it needs no special case to be readable: the cell's VALUE is a
+    # Markdown.MD, which Julia prints as text on its own.
+    shown = call("output", Dict("session" => S, "cell" => String(c.cell_id),
+                                "mime" => "text/plain"))
+    @test occursin("Findings", shown.output)
+    @test occursin("5", shown.output)    # the interpolation did run
+    @test !occursin("<h1", shown.output)
 
     w = call("edit", Dict("session" => S, "mode" => "insert",
                           "code" => "html\"<table><tr><td>a</td><td>1</td></tr></table>\"",
@@ -803,6 +794,19 @@ end
         call("edit", Dict("session" => S, "cell" => String(id), "mode" => "delete",
                           "wait_seconds" => 60))
     end
+end
+
+@testset "output reaches a cell that defines no name" begin
+    # The value is fetched by cell_id from the worker, so a `let` block with no
+    # name is as readable as a global -- which a lookup by variable never was.
+    r = call("edit", Dict("session" => S, "mode" => "insert",
+                          "code" => "let\n    collect(1:5) .^ 2\nend", "wait_seconds" => 60))
+    id = only(r.cells).cell_id
+    @test only(r.cells).name == id            # no global, so it is named by its id
+    full = call("output", Dict("session" => S, "cell" => String(id), "mime" => "text/plain"))
+    @test occursin("25", full.output)
+    call("edit", Dict("session" => S, "cell" => String(id), "mode" => "delete",
+                      "wait_seconds" => 60))
 end
 
 @testset "output: one cell, complete" begin
@@ -832,15 +836,20 @@ end
     call("edit", Dict("session" => S, "cell" => "long", "mode" => "delete",
                       "wait_seconds" => 60))
 
-    # A value Pluto ITSELF shortened comes back shortened, carrying Pluto's own
-    # size marker. `output` never re-executes a cell, so the rest of that string
-    # exists only in the worker: saying so beats pretending to be complete.
+    # A value PLUTO shortened for its own display is complete here: the record
+    # carries Pluto's summary, `output` asks the worker for the value itself.
     call("edit", Dict("session" => S, "mode" => "insert",
                       "code" => "shortened = join(string.(1:20000), \"\\n\")",
                       "wait_seconds" => 60))
     s = call("output", Dict("session" => S, "cell" => "shortened", "mime" => "text/plain"))
-    @test occursin("bytes", s.output)                # Pluto's " ⋯ N bytes ⋯ "
-    @test !occursin("\e[", s.output)                 # with its ANSI colouring stripped
+    @test occursin("full output:", s.output)         # spilled, not elided
+    whole = read(match(r"full output: ([^)]+)\)", s.output)[1], String)
+    # Julia displays a String quoted and escaped, so the newlines arrive as
+    # \\n. That is what `display` does, and rendering it raw instead would be
+    # this package overriding Julia on how a String looks -- the one thing the
+    # two-renderers rule forbids.
+    @test occursin("20000", whole) && occursin("1\\n2\\n", whole)
+    @test !occursin("\e[", s.output)
     call("edit", Dict("session" => S, "cell" => "shortened", "mode" => "delete",
                       "wait_seconds" => 60))
 
@@ -933,8 +942,7 @@ end
     # the hint is what is left -- naming the cell, so it can be run as printed.
     r = call("output", Dict("session" => S, "cell" => "svgfig", "mime" => "image/png"))
     @test !occursin("<path", string(r))          # not one screenful of it, either
-    @test r.mime == "image/svg+xml"
-    @test occursin("AsPNG(svgfig)", r.hint)
+    @test occursin("PNG", r.hint)
 
     # The method cell defines no global, so it is addressed by id -- and it goes
     # FIRST: left behind, it would error the moment TinySVG stopped existing.

@@ -23,11 +23,15 @@ That is free — it is already in the record you were returned. It answers
 "what shape is this", "what type", "roughly what magnitude". A `≥` means
 Pluto truncated: the true length is one cell away, not a guess to make.
 
-A nested field shown as `…` — `(trimmed = (est = 0.94, ci = …))` — is the
-record being brief, not the value being unavailable:
-`output(cell="robust", mime="text/plain")` expands it. There is still no expand
-protocol for the elements themselves; if you want elements 4090–4110, that is a
-cell: `x[4090:4110]`.
+That is Pluto's own summary — the same one a human sees in the browser. A
+nested field shown as `…` — `(trimmed = (est = 0.94, ci = …))` — is the record
+being brief, not the value being unavailable. `output(cell="robust",
+mime="text/plain")` gives you the value as Julia prints it, complete.
+
+Which to reach for: the sketch answers *what shape is this*, `output` answers
+*what is this exactly*, and a probe cell answers *what about this part* —
+`x[4090:4110]`, `describe(df)`. Ask `output` for a 100k-element array and you
+will get all 100k, spilled to a file; that is usually the wrong question.
 
 ## 2. Statistics, not values
 

@@ -136,19 +136,29 @@ one-line sketch, not the underlying values: two arrays with the same sketch can
 differ deeper in. When that matters, a probe cell answers it — `hash(x)`,
 `extrema(x)`, `sum(x)`.
 
-- Output is a **sketch**, one line: `Vector{Float64}, ≥30 elements: [0.12, …]`.
-  For the full value — including the nested fields the sketch shows as `…` —
-  call `output(cell=..., mime="text/plain")`.
-- `output` requires a `mime`, because it can hand back three different things:
-  `image/png` for a figure, `text/plain` for a value, `text/html` for a markup
-  cell's raw markup. The record's `mime` field tells you which one to ask for.
+**The record is Pluto's rendering; `output` is Julia's.** The record summarises
+a value the way Pluto summarises it in the browser — one line, one level deep,
+`Vector{Float64}, ≥30 elements: [0.12, …]`. `output` gives you the value as
+Julia itself prints it, with nothing elided, fetched from the worker:
+
+```
+output(cell="robust", mime="text/plain")     the value, complete
+output(cell="residual_fit", mime="image/png") the picture
+```
+
+`mime` is required, and those are the two. A nested field the record showed as
+`…` is there in full; so is every element of a long array. If it is too big to
+carry it spills to a file and you get the path.
 - **A markdown cell's output never comes back**, and neither does a plot's or a
   widget's: the entry is `mime` and nothing else. Your markdown renders to the
   prose you just wrote, so there is nothing in it you do not have. A `success`
   status is the confirmation that it rendered.
 - If a markdown cell interpolates a value — `md"the mean is $(m)"` — it will
   re-report whenever that value changes, because the rendered output changed.
-  Ask for it with `mime="text/html"` if you need to see what it says.
+  `output(cell=..., mime="text/plain")` shows you what it says: the cell's value
+  is a `Markdown.MD`, and Julia prints that as text.
+- A cell that defines no name — a `let` block, a plot — is reachable too:
+  `output` works by `cell_id`, which every cell has.
 - Text over 2 KB spills to a file and the payload names the path. Read or grep
   that file directly if you have filesystem tools; if you do not, a probe cell
   that narrows the value (`x[1:20]`, `describe(x)`) is the way in.

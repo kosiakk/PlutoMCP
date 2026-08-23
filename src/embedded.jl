@@ -737,9 +737,35 @@ function Base.show(io::IO, m::MIME"image/png", p::AsPNG)
     end
 end
 
+# ------------------------------------------------------------- by cell_id --
+#
+# PlutoRunner keeps every cell's value in `cell_results`, keyed by cell_id. That
+# is the complete thing itself, not Pluto's rendering of it -- so `output` can
+# ask the worker for the whole value instead of reassembling the summary Pluto
+# stored for its frontend. It works for a cell that defines no name, which is
+# the case a lookup by variable never could.
+
+_value(id) = getfield(Main, :PlutoRunner).cell_results[Base.UUID(id)]
+
+# 8 MB of text is far past anything worth reading and still cheap to move
+# in-process; `IOBuffer(maxsize=)` stops the write rather than the machine.
+const TEXT_CAP = 8_000_000
+
+# The most complete text Julia has: `show(io, MIME"text/plain"(), x)` is the
+# `display` form -- what the REPL prints -- and `:limit=>false` turns off the
+# elision the REPL adds. Anything shorter is a summary, and the record already
+# carries one of those.
+function full_text(id)
+    io = IOBuffer(maxsize=TEXT_CAP)
+    show(IOContext(io, :limit => false, :color => false, :compact => false),
+         MIME"text/plain"(), _value(id))
+    String(take!(io))
+end
+
 # The same rendering, as bytes -- so the SERVER can ask for a picture on the
 # agent's behalf, without a cell and without a round trip through the agent.
 png_bytes(fig) = (io = IOBuffer(); show(io, MIME"image/png"(), AsPNG(fig)); take!(io))
+png_of(id) = png_bytes(_value(id))
 
 end
 """
