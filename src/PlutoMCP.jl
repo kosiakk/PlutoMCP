@@ -19,11 +19,13 @@ using UUIDs
 using JSON3
 using ModelContextProtocol
 
+include("render.jl")
 include("embedded.jl")
 include("tools.jl")
 
 export start_session, stop_session, notebook_source, cell_labels, resolve_cell,
-    cell_info, cells_info, run_cells!, run_with_deadline, busy_cells,
+    cell_info, cells_info, record, run_cells!, run_with_deadline, wait_for_idle,
+    await_run, cascade, busy_cells, sketch, truncate_payload, spill_dir,
     build_server, run_server
 
 end # module PlutoMCP
