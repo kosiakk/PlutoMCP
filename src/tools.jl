@@ -507,13 +507,43 @@ end
 
 const RASTER_MIMES = Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"])
 
+"""
+    _render_png(session_name, nb, label) -> Union{Nothing,Vector{UInt8}}
+
+Ask the notebook's own plotting library to rasterise the figure a cell already
+rendered as markup. Best effort, and `nothing` is a perfectly good answer: the
+caller has a hint to fall back on.
+
+Three ways this declines, all of them on purpose:
+
+  - the cell defines no global, so there is no figure to name. Pluto stores the
+    RENDERED body, not the object, and re-running the cell to get one back
+    would make `output` a thing that executes code.
+  - the notebook is busy. `output` is a read, and a read must not queue behind
+    the run it might have been called to look at.
+  - the figure cannot show itself as PNG and its library has no savefig/save.
+"""
+function _render_png(session_name, nb::Pluto.Notebook, label::AbstractString)
+    Base.isidentifier(label) || return nothing
+    isempty(busy_cells(nb)) || return nothing
+    s = _session(session_name)
+    ensure_helpers!(s.session, nb)
+    try
+        bytes = Pluto.WorkspaceManager.eval_fetch_in_workspace((s.session, nb),
+            :(Main.PlutoMCP.png_bytes($(Symbol(label)))))
+        bytes isa Vector{UInt8} && !isempty(bytes) ? bytes : nothing
+    catch
+        nothing
+    end
+end
+
 _body_bytes(b::Vector{UInt8}) = length(b)
 _body_bytes(b::AbstractString) = sizeof(b)
 _body_bytes(b) = sizeof(string(b))
 
 pluto_output = MCPTool(
     name="output",
-    description="One cell's output, complete: the full text where the record only had a sketch, or the image itself when the cell rendered one. Oversize output spills to a file and the path is returned — read or grep it directly.",
+    description="One cell's output, complete: the full text where the record only had a sketch, or the picture when the cell's value is a figure — including one Pluto stored as SVG, which is asked for a PNG rather than handed over as markup. Oversize output spills to a file and the path is returned — read or grep it directly.",
     parameters=[
         ToolParameter(name="cell", type="string", description=CELL_REF_DOC, required=true),
         NOTEBOOK_PARAM,
@@ -539,13 +569,18 @@ pluto_output = MCPTool(
             return ImageContent(data=body, mime_type=mime)
         end
         # Vector image formats: markup, and markup of a picture is the one text
-        # worth nobody's bytes. Not one screenful of it either -- a truncated
-        # <path d="..."> answers no question that the full one would.
+        # worth nobody's bytes. Asking the figure for a PNG costs ~300 image
+        # tokens against ~2000 for the same plot as a braille canvas, so the
+        # server does it here rather than spending a round trip telling the
+        # agent to write the cell that does it.
         if startswith(mime, "image/")
+            png = _render_png(_sess(args), nb, label)
+            png === nothing || return ImageContent(data=png, mime_type="image/png")
             return _ok((cell=label, mime=mime, bytes=_body_bytes(body),
                         hint="This is $(mime) — markup, not a raster image, and not " *
-                             "worth reading. For a picture, run `PlutoMCP.AsPNG($label)` " *
-                             "in a delete_on_success cell."))
+                             "worth reading. Rendering it as PNG failed or the notebook " *
+                             "was busy; `PlutoMCP.AsPNG($label)` in a delete_on_success " *
+                             "cell does the same thing from inside the notebook."))
         end
         text = body isa AbstractDict ? _full_text(body, mime) :
                body isa Vector{UInt8} ? String(copy(body)) :

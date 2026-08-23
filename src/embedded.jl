@@ -715,6 +715,10 @@ function Base.show(io::IO, m::MIME"image/png", p::AsPNG)
     end
 end
 
+# The same rendering, as bytes -- so the SERVER can ask for a picture on the
+# agent's behalf, without a cell and without a round trip through the agent.
+png_bytes(fig) = (io = IOBuffer(); show(io, MIME"image/png"(), AsPNG(fig)); take!(io))
+
 end
 """
 

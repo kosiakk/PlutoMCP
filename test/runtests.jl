@@ -857,14 +857,38 @@ end
                            "code" => "svgfig = TinySVG()"))
     @test only(c.mime for c in r0.cells if c.name == "svgfig") == "image/svg+xml"
 
+    # TinySVG cannot show as PNG and has no savefig, so rendering declines and
+    # the hint is what is left -- naming the cell, so it can be run as printed.
     r = call("output", Dict("session" => S, "cell" => "svgfig"))
     @test !occursin("<path", string(r))          # not one screenful of it, either
     @test r.mime == "image/svg+xml" && r.bytes > 1000
-    @test occursin("AsPNG(svgfig)", r.hint)      # named, so it can be run as printed
+    @test occursin("AsPNG(svgfig)", r.hint)
 
     # The method cell defines no global, so it is addressed by id -- and it goes
     # FIRST: left behind, it would error the moment TinySVG stopped existing.
     for n in (only(c.cell_id for c in rshow.cells), "svgfig", "TinySVG")
+        call("edit", Dict("session" => S, "cell" => n, "mode" => "delete",
+                          "wait_seconds" => 60))
+    end
+end
+
+@testset "output renders a figure to PNG instead of describing it" begin
+    # A type that CAN show as PNG stands in for a plotting library: `output`
+    # asks it for the picture rather than telling the agent to go and ask.
+    call("edit", Dict("session" => S, "mode" => "insert", "wait_seconds" => 60,
+                      "code" => "struct BothWays end"))
+    rshow = call("edit", Dict("session" => S, "mode" => "insert", "wait_seconds" => 60,
+                      "code" => "begin\n" *
+                                "Base.show(io::IO, ::MIME\"image/svg+xml\", ::BothWays) = print(io, \"<svg/>\")\n" *
+                                "Base.show(io::IO, ::MIME\"image/png\", ::BothWays) = write(io, UInt8[0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a])\n" *
+                                "end"))
+    call("edit", Dict("session" => S, "mode" => "insert", "wait_seconds" => 60,
+                      "code" => "bothfig = BothWays()"))
+    r = call("output", Dict("session" => S, "cell" => "bothfig"))
+    @test r.mime_type == "image/png"      # ImageContent, not a JSON record
+    @test r.data isa Vector{UInt8} && !isempty(r.data)
+
+    for n in (only(c.cell_id for c in rshow.cells), "bothfig", "BothWays")
         call("edit", Dict("session" => S, "cell" => n, "mode" => "delete",
                           "wait_seconds" => 60))
     end
