@@ -1,3 +1,9 @@
+# Pluto's own new_notebooks_directory() defaults to ~/.julia/pluto_notebooks
+# -- a real user's actual notebook folder. Every `create` call (and anything
+# else that lets Pluto pick a path) would otherwise litter it with test
+# notebooks on every run. Redirect before anything can create one.
+ENV["JULIA_PLUTO_NEW_NOTEBOOKS_DIR"] = mktempdir(; prefix="PlutoMCP_test_")
+
 using Test
 using PlutoMCP
 using Pluto
