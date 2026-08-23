@@ -125,6 +125,21 @@ const S = "test"
     @test occursin("no session", call("read", Dict("session" => "absent")).message)
 end
 
+@testset "start twice under the same name doesn't leak the first server" begin
+    T = "restart-leak-test"
+    call("start", Dict("session" => T))
+    call("create", Dict("session" => T, "block" => 60, "cells" => ["w = 1"]))
+    old_worker = Pluto.WorkspaceManager.get_workspace(
+        (P._session(T).session, P._notebook(T))).worker
+
+    r2 = call("start", Dict("session" => T))            # same name, second time
+    @test occursin("localhost:", r2.host)
+    @test !Pluto.Malt.isrunning(old_worker)              # the old one is really gone
+    @test call("read", Dict("session" => T)).error       # and so is its notebook
+
+    call("stop", Dict("session" => T))
+end
+
 @testset "create and read" begin
     r = call("create", Dict("session" => S, "block" => 60,
         "cells" => ["a = 6", "b = 7", "prod = a * b", "md\"# title\""],

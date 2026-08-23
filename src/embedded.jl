@@ -111,9 +111,14 @@ can open the notebook in a browser; nothing here talks to it over the network.
 
 Registers an `on_event` hook first, so changes are observable from the moment
 the session exists rather than from the first time someone asks.
+
+Calling this twice for the same `name` stops whatever was already running
+under it first -- otherwise SESSIONS[nm] would just be overwritten, leaking
+the previous server and every notebook worker process it owned.
 """
 function start_session(name::AbstractString; port::Union{Nothing,Int}=nothing)
     nm = String(name)
+    haskey(SESSIONS, nm) && stop_session(nm)
     port = something(port, _free_port())
     options = Pluto.Configuration.from_flat_kwargs(;
         port, launch_browser=false, require_secret_for_access=true,
