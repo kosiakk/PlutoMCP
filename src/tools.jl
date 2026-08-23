@@ -284,6 +284,10 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
         name = _sess(args); s = _session(name); nb = _nb(args)
         mode = get(args, "mode", "replace")
         code = String(something(get(args, "code", nothing), ""))
+        # What the CALLER sent, before any wrapping: the echo test compares
+        # against this, so a markdown cell -- whose stored text is not what
+        # arrived -- still reports its code.
+        sent = code
         get(args, "cell_type", "code") == "markdown" && (code = _wrap_markdown(code))
         ref = get(args, "cell", nothing)
         throwaway = get(args, "delete_on_success", false) == true
@@ -340,7 +344,7 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
             _mark_seen!(name, nb.notebook_id, c.cell_id, code)
             finished, waited, touched = run_with_deadline(name, nb, Pluto.Cell[c];
                                                           wait_seconds=_wait(args))
-            _ok(record(name, nb, touched, finished, waited))
+            _ok(drop_echoed_code(record(name, nb, touched, finished, waited), c, sent))
         end
     end),
     return_type=TextContent,
@@ -572,7 +576,7 @@ Every response except `output`'s bytes, `start`'s host/secret and `list`'s paths
 """
 
 function build_server()
-    mcp_server(name="pluto", version="0.4.2",
+    mcp_server(name="pluto", version="0.4.3",
                description=SERVER_DESCRIPTION, tools=ALL_TOOLS)
 end
 

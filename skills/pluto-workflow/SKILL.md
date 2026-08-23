@@ -108,6 +108,11 @@ Each cell entry carries `name` (the global it defines — that is also how you
 address it), `cell_id`, `status`, `code`, the rendered output, log entries, and
 an `error` message if it failed.
 
+The cell you just wrote comes back **without** `code` — you sent that text, so
+reading it back teaches you nothing. Everything else about it is there. A
+markdown cell is the exception, because Pluto stores it wrapped in `md"""` and
+that is not what you sent.
+
 A cell you have already been shown, unchanged, comes back short:
 
 ```

@@ -60,6 +60,8 @@ Every tool response except `output` bytes, `start` host/secret, and `list` paths
 `status, waited_seconds, timestamp, cells`. `timestamp` is ISO 8601 UTC with milliseconds (`"2026-08-23T18:42:23.788Z"`) — fixed width, so lexicographic order is chronological order; `since` takes it back, and still accepts a float unix time.
 `cells` lists every cell the reactive cascade touched, including clean downstream re-runs.
 
+An `edit`'s own cell omits `code`: the caller supplied that text, and echoing it back is the one field of the record they already hold. The comparison is byte-identical-to-what-arrived, so a markdown cell (stored wrapped in `md"""`) still reports its code, and every other cell in the cascade always does.
+
 Cells this session already saw, unchanged, compress to `name, status, unchanged_since=<timestamp>`: at record build the server hashes each cell's full pre-truncation entry (code, status, rendered body, error, logs) and compares against the last hash reported to this session. Lazy, never on events: unreported intermediate states leave no trace, because the reference point is the agent's context, not notebook history.
 Unchanged certifies the rendered output; for sketched containers that is the summary, not the underlying data — value-level certainty is a probe cell (`hash(x)`).
 The cascade stays fully visible either way.

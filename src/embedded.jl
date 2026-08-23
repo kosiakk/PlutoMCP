@@ -347,6 +347,28 @@ function cell_info(nb::Pluto.Notebook, c::Pluto.Cell, labels=cell_labels(nb);
     return info
 end
 
+"""
+    drop_echoed_code(r, c, code) -> record
+
+Remove `code` from the entry for the cell the caller just wrote. An `edit`
+handed us that text; sending it straight back is the one field of the record
+the agent already has, and for a large cell it is the largest.
+
+Only when the stored code is byte-identical to what arrived. A markdown cell is
+wrapped in `md\"\"\"` on the way in, and a cell whose text is not what the caller
+sent is news, not an echo -- so the comparison, not the mode, decides.
+
+Everything else stays: status, output, error, logs, name and cell_id are the
+answer the edit was asked for.
+"""
+function drop_echoed_code(r::NamedTuple, c::Pluto.Cell, code::AbstractString)
+    c.code == code || return r
+    id = string(c.cell_id)
+    merge(r, (cells = Any[e isa NamedTuple && get(e, :cell_id, nothing) == id ?
+                          Base.structdiff(e, NamedTuple{(:code,)}) : e
+                          for e in r.cells],))
+end
+
 #=
 (session, notebook) => cell_id => (fingerprint, reported_at) for the last
 version of that cell this SESSION was told about.

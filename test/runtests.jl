@@ -373,13 +373,51 @@ end
     @test any(c -> c.name == "total" && c.output == "70", r.cells)
 end
 
+@testset "edit does not echo the code it was just given" begin
+    # The caller wrote this text; sending it back is the one field of the
+    # record they already have, and for a large cell it is the biggest.
+    r = call("edit", Dict("session" => S, "mode" => "insert",
+                          "code" => "echoed = 6 * 7", "wait_seconds" => 60))
+    entry = only(c for c in r.cells if c.name == "echoed")
+    @test !haskey(entry, :code)
+    @test entry.output == "42"                  # everything asked for is still there
+
+    # Replace is the same promise.
+    r2 = call("edit", Dict("session" => S, "cell" => "echoed",
+                           "code" => "echoed = 6 * 8", "wait_seconds" => 60))
+    @test !haskey(only(c for c in r2.cells if c.name == "echoed"), :code)
+
+    # Markdown is wrapped in md""" on the way in, so the stored code is NOT
+    # what arrived -- that is news, not an echo, and it comes back.
+    md = call("edit", Dict("session" => S, "mode" => "insert", "cell_type" => "markdown",
+                           "code" => "a heading", "wait_seconds" => 60))
+    entry_md = only(md.cells)
+    @test haskey(entry_md, :code) && occursin("md\"\"\"", entry_md.code)
+
+    # A cell the agent did not write is not an echo either: the cascade a
+    # replace sets off has to arrive in full.
+    call("edit", Dict("session" => S, "mode" => "insert",
+                      "code" => "downstream_of_echoed = echoed + 1", "wait_seconds" => 60))
+    r3 = call("edit", Dict("session" => S, "cell" => "echoed",
+                           "code" => "echoed = 6 * 9", "wait_seconds" => 60))
+    @test haskey(only(c for c in r3.cells if c.name == "downstream_of_echoed"), :code)
+
+    for n in ("downstream_of_echoed", "echoed", entry_md.name)
+        call("edit", Dict("session" => S, "cell" => n, "mode" => "delete",
+                          "wait_seconds" => 60))
+    end
+end
+
 @testset "edit: delete_on_success" begin
     before = length(call("read", Dict("session" => S)).cells)
 
     r = call("edit", Dict("session" => S, "mode" => "insert",
                           "code" => "a + b", "delete_on_success" => true, "wait_seconds" => 60))
     @test r.status == "success"
+    # Reported by NAME, the way the agent addresses a cell -- not by a UUID it
+    # never used. An unnamed cell is named by its id, so this one is its id.
     @test haskey(r, :deleted)
+    @test r.deleted == only(c.name for c in r.cells)
     @test only(c.output for c in r.cells) == "17"       # the answer still comes back
     @test length(call("read", Dict("session" => S)).cells) == before
     @test !occursin("a + b", read(P._notebook(S).path, String))
@@ -414,8 +452,6 @@ end
     r = call("edit", Dict("session" => S, "mode" => "insert",
                           "code" => "broken = (", "wait_seconds" => 60))
     c = only(r.cells)
-    # Reported by NAME, the way the agent addresses a cell -- not by a UUID it
-    # never used. An unnamed cell is named by its id, so this one is its id.
     @test c.status == "error"
     @test r.status == "error"                     # aggregated by the one rule
     @test occursin("parseerror", c.mime)
@@ -516,7 +552,10 @@ end
 
     ins = call("edit", Dict("session" => T, "mode" => "insert", "code" => "base = 2",
                             "wait_seconds" => 60))
-    @test haskey(only(ins.cells), :code)                  # a new cell too
+    # A cell the caller just wrote is the one exception: its code is not read
+    # back to it (see "edit does not echo"), but the rest of the entry is full.
+    @test !haskey(only(ins.cells), :code)
+    @test haskey(only(ins.cells), :output)
     call("edit", Dict("session" => T, "mode" => "insert", "code" => "derived = base * 3",
                       "wait_seconds" => 60))
 
@@ -529,11 +568,12 @@ end
     # ISO 8601 UTC, fixed width: lexicographic order IS chronological order.
     @test all(c -> c.unchanged_since <= again.timestamp, again.cells)
 
-    # A real change comes back in full, and so does the cascade it caused.
+    # A real change comes back in full -- minus the code the caller just sent
+    # -- and so does the cascade it caused.
     r = call("edit", Dict("session" => T, "cell" => "base", "code" => "base = 5",
                           "wait_seconds" => 60))
     changed = only(c for c in r.cells if get(c, :name, "") == "base")
-    @test get(changed, :code, "") == "base = 5"
+    @test !haskey(changed, :code) && get(changed, :output, "") == "5"
     cascaded = only(c for c in r.cells if get(c, :name, "") == "derived")
     @test get(cascaded, :output, "") == "15"
 
