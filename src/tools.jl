@@ -437,6 +437,38 @@ Only for variables introduced with `@bind name widget`; use edit for anything el
     return_type=TextContent,
 )
 
+pluto_docs = MCPTool(
+    name="docs",
+    description="""Docstrings for every symbol a cell references -- the man pages of everything it touches, in one call.
+
+Backed by `@doc` in the notebook's live workspace, so it sees whatever the notebook actually `using`s or defines, not just Base. Symbols nothing has a docstring for are omitted rather than filling the result with "no docs found".""",
+    parameters=[
+        ToolParameter(name="cell_id", type="string", description=CELL_REF_DOC, required=true),
+        NOTEBOOK_PARAM,
+        ToolParameter(name="session", type="string", description="Which session", required=false, default="default"),
+    ],
+    handler=(args -> @safely begin
+        name = _sess(args); s = _session(name); nb = _nb(args)
+        c = resolve_cell(nb, args["cell_id"])
+        refs = sort!(unique(String[string(r) for r in nb.topology.nodes[c].references]))
+        docs = Dict{String,String}()
+        for r in refs
+            try
+                expr = Meta.parse("@doc " * r)
+                d = Pluto.WorkspaceManager.eval_fetch_in_workspace((s.session, nb), expr)
+                text = string(d)
+                occursin("No documentation found", text) || (docs[r] = text)
+            catch
+                # Not every reference is a documentable symbol (a local, a
+                # keyword argument name, a macro-internal helper) -- skip it
+                # rather than fail the whole call over one bad name.
+            end
+        end
+        _ok((cell=args["cell_id"], docs=docs))
+    end),
+    return_type=TextContent,
+)
+
 pluto_deps = MCPTool(
     name="deps",
     description="""Upstream and downstream cells for a cell: what it reads, and what would break if it changed.
@@ -491,7 +523,7 @@ pluto_stop = MCPTool(
 
 const ALL_TOOLS = [pluto_start, pluto_open, pluto_create, pluto_list, pluto_read, pluto_edit,
                    pluto_run, pluto_status, pluto_execute, pluto_output, pluto_png,
-                   pluto_bond, pluto_deps, pluto_export, pluto_stop]
+                   pluto_bond, pluto_deps, pluto_docs, pluto_export, pluto_stop]
 
 function build_server()
     mcp_server(

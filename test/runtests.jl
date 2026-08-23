@@ -156,6 +156,12 @@ end
     @test isempty(r2.downstream)   # nothing depends on prod
 end
 
+@testset "docs: docstrings for cell references" begin
+    d = call("docs", Dict("session" => S, "cell_id" => "prod"))   # prod = a * b
+    @test occursin("Multiplication operator", get(d.docs, "*", ""))
+    @test !haskey(d.docs, "a")     # `a` is a notebook variable, not documentable
+end
+
 @testset "insert and delete" begin
     before = length(call("read", Dict("session" => S)))
 

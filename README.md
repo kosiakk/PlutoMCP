@@ -106,6 +106,7 @@ claude mcp add pluto -- julia --project=$HOME/Documents/PlutoMCP \
 | `output` | one cell's output, plus its logs |
 | `png` | render a plotting cell as an image |
 | `deps` | upstream/downstream cells for a name: what breaks if it changes |
+| `docs` | docstrings for every symbol a cell references |
 | `export` | self-contained HTML with code and outputs embedded |
 | `stop` | shut the server down |
 
