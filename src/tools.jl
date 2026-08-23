@@ -498,6 +498,10 @@ end
 
 const RASTER_MIMES = Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"])
 
+_body_bytes(b::Vector{UInt8}) = length(b)
+_body_bytes(b::AbstractString) = sizeof(b)
+_body_bytes(b) = sizeof(string(b))
+
 pluto_output = MCPTool(
     name="output",
     description="One cell's output, complete: the full text where the record only had a sketch, or the image itself when the cell rendered one. Oversize output spills to a file and the path is returned — read or grep it directly.",
@@ -525,14 +529,20 @@ pluto_output = MCPTool(
             end
             return ImageContent(data=body, mime_type=mime)
         end
+        # Vector image formats: markup, and markup of a picture is the one text
+        # worth nobody's bytes. Not one screenful of it either -- a truncated
+        # <path d="..."> answers no question that the full one would.
+        if startswith(mime, "image/")
+            return _ok((cell=label, mime=mime, bytes=_body_bytes(body),
+                        hint="This is $(mime) — markup, not a raster image, and not " *
+                             "worth reading. For a picture, run `PlutoMCP.AsPNG($label)` " *
+                             "in a delete_on_success cell."))
+        end
         text = body isa AbstractDict ? _full_text(body, mime) :
                body isa Vector{UInt8} ? String(copy(body)) :
                body === nothing ? "" : string(body)
-        r = (cell=label, mime=mime, status=cell_status(c),
-             output=truncate_payload(text; nb, label, kind="full"))
-        startswith(mime, "image/") &&
-            (r = merge(r, (hint="This is markup, not a raster image. For a picture, run `PlutoMCP.AsPNG(fig)` in a delete_on_success cell.",)))
-        _ok(r)
+        _ok((cell=label, mime=mime, status=cell_status(c),
+             output=truncate_payload(text; nb, label, kind="full")))
     end),
     return_type=Content,
 )

@@ -802,6 +802,34 @@ end
     end
 end
 
+@testset "output refuses vector-image markup instead of pasting it" begin
+    # A Plots figure stores SVG, which no MCP client can show. Handing back a
+    # screenful of <path d="..."> is not a smaller version of the picture, it
+    # is a picture nobody gets -- so `output` names the shape and the way out.
+    # A type that can only show as SVG stands in for the plotting library.
+    call("edit", Dict("session" => S, "mode" => "insert", "wait_seconds" => 60,
+                      "code" => "struct TinySVG end"))
+    rshow = call("edit", Dict("session" => S, "mode" => "insert", "wait_seconds" => 60,
+                      "code" => "Base.show(io::IO, ::MIME\"image/svg+xml\", ::TinySVG) = " *
+                                "print(io, \"<svg xmlns='http://www.w3.org/2000/svg'>\" * " *
+                                "repeat(\"<path d='M0 0 L9 9'/>\", 200) * \"</svg>\")"))
+    r0 = call("edit", Dict("session" => S, "mode" => "insert", "wait_seconds" => 60,
+                           "code" => "svgfig = TinySVG()"))
+    @test only(c.mime for c in r0.cells if c.name == "svgfig") == "image/svg+xml"
+
+    r = call("output", Dict("session" => S, "cell" => "svgfig"))
+    @test !occursin("<path", string(r))          # not one screenful of it, either
+    @test r.mime == "image/svg+xml" && r.bytes > 1000
+    @test occursin("AsPNG(svgfig)", r.hint)      # named, so it can be run as printed
+
+    # The method cell defines no global, so it is addressed by id -- and it goes
+    # FIRST: left behind, it would error the moment TinySVG stopped existing.
+    for n in (only(c.cell_id for c in rshow.cells), "svgfig", "TinySVG")
+        call("edit", Dict("session" => S, "cell" => n, "mode" => "delete",
+                          "wait_seconds" => 60))
+    end
+end
+
 @testset "AsPNG survives Pluto restarting the worker process" begin
     # Installing a package restarts the notebook PROCESS, not just the
     # workspace module -- so `Main.PlutoMCP` and the preamble entry both go
