@@ -468,6 +468,11 @@ end
 
     @test call("output", Dict("session" => S, "cell_id" => "z",
                               "notebook" => "nonexistent-xyz.jl")).error
+
+    # Also reachable by notebook_id, not just path.
+    id_by_path = only(x for x in ls if x.path == first_path).notebook_id
+    @test call("output", Dict("session" => S, "cell_id" => "doubled",
+                              "notebook" => String(id_by_path))).body == "42"
 end
 
 @testset "stop" begin
