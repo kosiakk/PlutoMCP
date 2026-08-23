@@ -71,29 +71,32 @@ as every OTHER open notebook's cells having just been deleted. A
 tool-initiated edit already updated the snapshot via `_mark_seen!` before
 running, so it diffs to nothing here -- what is left is what a human changed
 in the browser while nobody was looking.
+
+An entry is `at, cell_id, change, old_code` and nothing more. Names are
+resolved at REPORT time, from the live notebook -- this hook fires on every
+state transition of every run, and paying for a topology update here, to
+record a field no reader uses, would tax the thing it observes. The new code
+is deliberately absent too: the record's `code` is the cell's text as it is
+now, and a stale copy must never be able to override it.
 """
 function _note_change!(name::String, nb::Pluto.Notebook)
     t = time()
     key = (name, nb.notebook_id)
     snap = get!(SNAPSHOTS, key, Dict{Base.UUID,String}())
     log = get!(CHANGES, key, NamedTuple[])
-    labels = cell_labels(nb)
     seen = Set{Base.UUID}()
     for c in nb.cells
         push!(seen, c.cell_id)
         old = get(snap, c.cell_id, nothing)
         if old === nothing
-            push!(log, (at=t, cell_id=string(c.cell_id), name=labels[string(c.cell_id)],
-                        change="inserted", old_code="", new_code=c.code))
+            push!(log, (at=t, cell_id=string(c.cell_id), change="inserted", old_code=""))
         elseif old != c.code
-            push!(log, (at=t, cell_id=string(c.cell_id), name=labels[string(c.cell_id)],
-                        change="edited", old_code=old, new_code=c.code))
+            push!(log, (at=t, cell_id=string(c.cell_id), change="edited", old_code=old))
         end
         snap[c.cell_id] = c.code
     end
     for id in setdiff(keys(snap), seen)
-        push!(log, (at=t, cell_id=string(id), name=string(id),
-                    change="deleted", old_code=snap[id], new_code=""))
+        push!(log, (at=t, cell_id=string(id), change="deleted", old_code=snap[id]))
         delete!(snap, id)
     end
     length(log) > CHANGES_MAX && deleteat!(log, 1:(length(log) - CHANGES_MAX))
