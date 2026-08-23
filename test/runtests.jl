@@ -12,7 +12,11 @@ using JSON3
 const P = PlutoMCP
 const TOOLS = Dict(t.name => t for t in P.ALL_TOOLS)
 
-"Call a tool the way an MCP client would, and decode its JSON result."
+"""Call a tool the way an MCP client would, and decode its JSON result.
+
+There is one server, so a suite that used to isolate state in named sessions
+isolates it in separate NOTEBOOKS instead: the state maps are keyed by
+notebook."""
 function call(name::String, args::Dict=Dict{String,Any}())
     r = TOOLS[name].handler(args)
     r isa P.TextContent ? JSON3.read(r.text) : r
@@ -26,8 +30,7 @@ offline_notebook(cells::Vector{String}) = P.notebook_source(cells)
 A record compacts cells this session has already been shown, so a value the
 suite wants to check again comes from `output` -- which is exactly the tool the
 agent would reach for."""
-cell_output(session, name) =
-    call("output", Dict("session" => session, "cell" => name, "mime" => "text/plain")).output
+cell_output(name) = call("output", Dict("cell" => name, "mime" => "text/plain")).output
 
 "Every field the one record promises. Used as an acceptance test everywhere."
 const RECORD_FIELDS = (:status, :waited_seconds, :timestamp, :cells)
@@ -215,7 +218,7 @@ end
     # `new_source`, `cell_id` and `source` are the words this surface used to
     # speak; every one of them now has exactly one replacement.
     banned = ["block", "new_source", "source", "cell_id", "waited_s", "full",
-              "edit_mode", "ephemeral", "finished", "errored"]
+              "edit_mode", "ephemeral", "finished", "errored", "session", "cell_type"]
     for tool in P.ALL_TOOLS, p in tool.parameters
         @test !(p.name in banned)
     end
@@ -232,91 +235,85 @@ end
     # comes back complete without a follow-up read.
     @test P.DEFAULT_WAIT > 0
 
-    # Ten tools, exactly these.
+    # Nine tools, exactly these. `export` folded into `output`: a notebook
+    # rendered as text/html IS the self-contained export.
     @test Set(keys(TOOLS)) == Set(["start", "open", "list", "edit", "run",
-                                   "read", "output", "bond", "export", "stop"])
+                                   "read", "output", "bond", "stop"])
+    # No tool takes a session: there is one server per process.
+    @test !any(p -> p.name == "session", Iterators.flatten(t.parameters for t in P.ALL_TOOLS))
 end
 
 # ---------------------------------------------------------------------------
 # Server-backed. One Pluto server for most of it: starting one is slow.
 # ---------------------------------------------------------------------------
 
-const S = "test"
+@testset "server lifecycle" begin
+    # Before start there is no server, and every tool must say so cleanly --
+    # not a KeyError from some other argument, and not a crash. Every handler
+    # resolves the server before touching anything else, so this is uniform.
+    for tool in P.ALL_TOOLS
+        tool.name == "start" && continue        # start CREATES it
+        r = call(tool.name)
+        @test r.error
+        @test occursin("no server running", r.message)
+    end
 
-@testset "session lifecycle" begin
-    r = call("start", Dict("session" => S))
+    r = call("start")
     @test occursin("localhost:", r.host)
     @test !isempty(r.secret)
 
-    # Tools must refuse clearly before a notebook exists, rather than throwing.
-    @test call("read", Dict("session" => S)).error
-    @test occursin("no session", call("read", Dict("session" => "absent")).message)
-
-    @test isempty(call("list", Dict("session" => S)))   # nothing open yet
-end
-
-@testset "every tool refuses a nonexistent session cleanly" begin
-    # Every handler resolves the session (or notebook) before touching any
-    # other argument, so this must produce the same clean "no session"
-    # message everywhere -- not a KeyError from some other required arg being
-    # absent, and not a crash.
-    for tool in P.ALL_TOOLS
-        tool.name == "start" && continue   # start CREATES the session
-        r = call(tool.name, Dict("session" => "absent"))
-        @test r.error
-        @test occursin("no session", r.message)
-    end
+    # Started, but nothing open: a clear refusal again.
+    @test occursin("no notebook open", call("read").message)
+    @test isempty(call("list"))
 end
 
 @testset "every notebook-taking tool refuses a bad notebook ref cleanly" begin
     for tool in P.ALL_TOOLS
         any(p -> p.name == "notebook", tool.parameters) || continue
-        r = call(tool.name, Dict("session" => S, "notebook" => "nonexistent-xyz.jl"))
+        r = call(tool.name, Dict("notebook" => "nonexistent-xyz.jl"))
         @test r.error
         @test occursin("no open notebook", r.message)
     end
 end
 
-@testset "start twice under the same name doesn't leak the first server" begin
-    T = "restart-leak-test"
-    call("start", Dict("session" => T))
-    call("open", Dict("session" => T, "create" => true, "wait_seconds" => 90))
+@testset "start twice doesn't leak the first server" begin
+    call("open", Dict("create" => true, "wait_seconds" => 90))
     old_worker = Pluto.WorkspaceManager.get_workspace(
-        (P._session(T).session, P._notebook(T))).worker
+        (P.session().session, P._notebook())).worker
 
-    r2 = call("start", Dict("session" => T))            # same name, second time
+    r2 = call("start")                                  # a second time
     @test occursin("localhost:", r2.host)
-    @test !Pluto.Malt.isrunning(old_worker)              # the old one is really gone
-    @test call("read", Dict("session" => T)).error       # and so is its notebook
-
-    call("stop", Dict("session" => T))
+    @test !Pluto.Malt.isrunning(old_worker)             # the old one is really gone
+    @test occursin("no notebook open", call("read").message)   # and so is its notebook
 end
 
-@testset "stop cleans up per-notebook state for every notebook" begin
-    # CHANGES/SNAPSHOTS are keyed by (session, notebook_id), so cleanup cannot
-    # be one delete!(dict, session_name). Spill directories are per notebook
-    # too, and they hold output nobody wants surviving the session.
-    T = "cleanup-multi-notebook-test"
-    call("start", Dict("session" => T))
-    call("open", Dict("session" => T, "create" => true, "wait_seconds" => 90))
+@testset "stop clears the state of every notebook it closes" begin
+    # The state maps are keyed per notebook -- several can be open -- and spill
+    # directories are per notebook too, holding output nobody wants surviving
+    # the server that produced it.
+    call("start")
+    call("open", Dict("create" => true, "wait_seconds" => 90))
     other = P.notebook_source(["q = 2"])
     other.path = tempname() * ".jl"
     Pluto.save_notebook(other)
-    call("open", Dict("session" => T, "path" => other.path, "wait_seconds" => 90))
-    @test count(k -> first(k) == T, keys(P.CHANGES)) == 2
-    @test count(k -> first(k) == T, keys(P.SNAPSHOTS)) == 2
+    call("open", Dict("path" => other.path, "wait_seconds" => 90))
+    @test length(P.CHANGES) == 2
+    @test length(P.SNAPSHOTS) == 2
 
-    spill = P.spill_dir(P._notebook(T))
+    spill = P.spill_dir(P._notebook())
     mkpath(spill); write(joinpath(spill, "leftover.txt"), "x")
 
-    call("stop", Dict("session" => T))
-    @test !any(k -> first(k) == T, keys(P.CHANGES))
-    @test !any(k -> first(k) == T, keys(P.SNAPSHOTS))
+    call("stop")
+    @test isempty(P.CHANGES)
+    @test isempty(P.SNAPSHOTS)
+    @test isempty(P.REPORTED)
     @test !isdir(spill)
+
+    call("start")           # the rest of the suite needs one
 end
 
 @testset "open: create, and the record it returns" begin
-    r = call("open", Dict("session" => S, "create" => true, "wait_seconds" => 120))
+    r = call("open", Dict("create" => true, "wait_seconds" => 120))
     @test is_record(r)
     @test r.status == "success"
     @test startswith(r.url, "http://localhost:")
@@ -332,62 +329,67 @@ end
 
 @testset "open: create with a name, and reopening it" begin
     path = joinpath(mktempdir(), "throughput experiment.jl")
-    r = call("open", Dict("session" => S, "create" => true, "path" => path,
+    r = call("open", Dict("create" => true, "path" => path,
                           "wait_seconds" => 120))
     @test r.path == path
-    call("edit", Dict("session" => S, "mode" => "insert",
+    call("edit", Dict("mode" => "insert",
                       "code" => "kept = 41 + 1", "wait_seconds" => 60))
 
     # Reopening the FILE gets the saved work back, cells and all.
-    r2 = call("open", Dict("session" => S, "path" => path, "wait_seconds" => 120))
+    r2 = call("open", Dict("path" => path, "wait_seconds" => 120))
     @test is_record(r2)
     @test any(c -> c.name == "kept", r2.cells)
-    @test cell_output(S, "kept") == "42"
+    @test cell_output("kept") == "42"
 
     # open without a path and without create is a clear refusal, not a guess.
-    @test call("open", Dict("session" => S)).error
+    @test call("open", Dict()).error
 end
 
-@testset "edit: insert, replace, delete" begin
-    call("open", Dict("session" => S, "create" => true, "wait_seconds" => 120))
+# The notebook most testsets build up (a, b, total). Testsets that need
+# isolation open their OWN notebook and stop it afterwards, then come back
+# here -- reopening an already-open path is a hit, and makes it current again.
+const MAIN = Ref{String}("")
 
-    r = call("edit", Dict("session" => S, "mode" => "insert",
+@testset "edit: insert, replace, delete" begin
+    call("open", Dict("create" => true, "wait_seconds" => 120))
+    MAIN[] = P._notebook().path
+
+    r = call("edit", Dict("mode" => "insert",
                           "code" => "a = 6", "wait_seconds" => 60))
     @test is_record(r)
     @test r.status == "success"
     @test only(c.name for c in r.cells) == "a"
     @test only(c.output for c in r.cells) == "6"
 
-    call("edit", Dict("session" => S, "mode" => "insert",
+    call("edit", Dict("mode" => "insert",
                       "code" => "b = 7", "cell" => "a", "wait_seconds" => 60))
-    call("edit", Dict("session" => S, "mode" => "insert",
+    call("edit", Dict("mode" => "insert",
                       "code" => "total = a * b", "cell" => "b", "wait_seconds" => 60))
-    @test cell_output(S, "total") == "42"
+    @test cell_output("total") == "42"
 
     # Prose is a cell like any other, and its code is not read back to the
     # caller who just wrote it. Naming the cell is how you see it.
-    m = call("edit", Dict("session" => S, "mode" => "insert",
+    m = call("edit", Dict("mode" => "insert",
                           "code" => "md\"\"\"# a heading\"\"\"",
                           "wait_seconds" => 60))
     @test !haskey(only(m.cells), :code)
-    wrapped = call("read", Dict("session" => S,
-                                "cells" => [only(c.cell_id for c in m.cells)]))
+    wrapped = call("read", Dict("cells" => [only(c.cell_id for c in m.cells)]))
     @test occursin("md\"\"\"", only(c.code for c in wrapped.cells))
 
-    d = call("edit", Dict("session" => S, "cell" => only(c.cell_id for c in m.cells),
+    d = call("edit", Dict("cell" => only(c.cell_id for c in m.cells),
                           "mode" => "delete", "wait_seconds" => 60))
     @test is_record(d)
     @test !any(c -> occursin("a heading", get(c, :code, "")),
-               call("read", Dict("session" => S)).cells)
+               call("read", Dict()).cells)
 
     # replace/delete without a cell is a refusal, not a crash.
-    @test call("edit", Dict("session" => S, "code" => "x = 1")).error
+    @test call("edit", Dict("code" => "x = 1")).error
 end
 
 @testset "cells reports the whole cascade, not just the target" begin
     # Editing `a` re-runs `total` cleanly. Reporting only the edited cell
     # describes the request; the cascade is what actually happened.
-    r = call("edit", Dict("session" => S, "cell" => "a", "code" => "a = 10",
+    r = call("edit", Dict("cell" => "a", "code" => "a = 10",
                           "wait_seconds" => 60))
     names = Set(c.name for c in r.cells)
     @test "a" in names
@@ -398,7 +400,7 @@ end
 @testset "code this session already holds is not sent again" begin
     # The caller wrote this text; sending it back is the one field of the
     # record they already have, and for a large cell it is the biggest.
-    r = call("edit", Dict("session" => S, "mode" => "insert",
+    r = call("edit", Dict("mode" => "insert",
                           "code" => "echoed = 6 * 7", "wait_seconds" => 60))
     entry = only(c for c in r.cells if c.name == "echoed")
     @test !haskey(entry, :code)
@@ -406,21 +408,21 @@ end
 
     # Replace is the same promise, with no comparison of contents: the caller
     # initiated the write, so the text cannot have become news in between.
-    r2 = call("edit", Dict("session" => S, "cell" => "echoed",
+    r2 = call("edit", Dict("cell" => "echoed",
                            "code" => "echoed = 6 * 8", "wait_seconds" => 60))
     @test !haskey(only(c for c in r2.cells if c.name == "echoed"), :code)
 
     # Prose is the caller's cell too, and not read back to them.
-    md = call("edit", Dict("session" => S, "mode" => "insert",
+    md = call("edit", Dict("mode" => "insert",
                            "code" => "md\"a heading\"", "wait_seconds" => 60))
     entry_md = only(md.cells)
     @test !haskey(entry_md, :code)
 
     # An execution cascade never rewrites code, so a downstream cell re-runs
     # without repeating its source -- the answer is the news, not the code.
-    call("edit", Dict("session" => S, "mode" => "insert",
+    call("edit", Dict("mode" => "insert",
                       "code" => "downstream_of_echoed = echoed + 1", "wait_seconds" => 60))
-    r3 = call("edit", Dict("session" => S, "cell" => "echoed",
+    r3 = call("edit", Dict("cell" => "echoed",
                            "code" => "echoed = 6 * 9", "wait_seconds" => 60))
     cascaded = only(c for c in r3.cells if c.name == "downstream_of_echoed")
     @test !haskey(cascaded, :code)
@@ -429,9 +431,9 @@ end
     # Naming a cell is the way back after a compact: whole entry, code first.
     # A bare read stays compact -- an agent that still holds the code has no
     # reason to ask for it.
-    quiet = call("read", Dict("session" => S))
+    quiet = call("read", Dict())
     @test !any(c -> haskey(c, :code), quiet.cells)
-    one = call("read", Dict("session" => S, "cells" => ["downstream_of_echoed"]))
+    one = call("read", Dict("cells" => ["downstream_of_echoed"]))
     @test only(c.code for c in one.cells) == "downstream_of_echoed = echoed + 1"
     @test only(c.output for c in one.cells) == "55"          # and all the details
 
@@ -439,22 +441,22 @@ end
     # code is: a cell whose value IS the string the agent just wrote says
     # nothing by reading it back.
     lit = "a string that is its own output"
-    e = call("edit", Dict("session" => S, "mode" => "insert",
+    e = call("edit", Dict("mode" => "insert",
                           "code" => "md\"$lit\"", "wait_seconds" => 60))
     @test !haskey(only(e.cells), :output)
-    call("edit", Dict("session" => S, "cell" => String(only(e.cells).cell_id),
+    call("edit", Dict("cell" => String(only(e.cells).cell_id),
                       "mode" => "delete", "wait_seconds" => 60))
 
     for n in ("downstream_of_echoed", "echoed", entry_md.name)
-        call("edit", Dict("session" => S, "cell" => n, "mode" => "delete",
+        call("edit", Dict("cell" => n, "mode" => "delete",
                           "wait_seconds" => 60))
     end
 end
 
 @testset "edit: delete_on_success" begin
-    before = length(call("read", Dict("session" => S)).cells)
+    before = length(call("read", Dict()).cells)
 
-    r = call("edit", Dict("session" => S, "mode" => "insert",
+    r = call("edit", Dict("mode" => "insert",
                           "code" => "a + b", "delete_on_success" => true, "wait_seconds" => 60))
     @test r.status == "success"
     # Reported by NAME, the way the agent addresses a cell -- not by a UUID it
@@ -462,12 +464,12 @@ end
     @test haskey(r, :deleted)
     @test r.deleted == only(c.name for c in r.cells)
     @test only(c.output for c in r.cells) == "17"       # the answer still comes back
-    @test length(call("read", Dict("session" => S)).cells) == before
-    @test !occursin("a + b", read(P._notebook(S).path, String))
+    @test length(call("read", Dict()).cells) == before
+    @test !occursin("a + b", read(P._notebook().path, String))
 
     # A cell that FAILS stays put, so the agent can read it and remove it
     # deliberately -- a cell that vanished mid-error is worse.
-    e = call("edit", Dict("session" => S, "mode" => "insert",
+    e = call("edit", Dict("mode" => "insert",
                           "code" => "error(\"probe blew up\")", "delete_on_success" => true,
                           "wait_seconds" => 60))
     @test e.status == "error"
@@ -476,23 +478,23 @@ end
     stuck = only(c.cell_id for c in e.cells)
     # An unnamed cell is named by its own id, so a compacted entry still
     # addresses it.
-    @test any(c -> c.name == stuck, call("read", Dict("session" => S)).cells)
-    call("edit", Dict("session" => S, "cell" => stuck, "mode" => "delete",
+    @test any(c -> c.name == stuck, call("read", Dict()).cells)
+    call("edit", Dict("cell" => stuck, "mode" => "delete",
                       "wait_seconds" => 60))
-    @test length(call("read", Dict("session" => S)).cells) == before
+    @test length(call("read", Dict()).cells) == before
 
     # An explicit wait_seconds=0 returns before the result is in, so the flag
     # cannot fire: deletion at return time is the entire contract.
-    z = call("edit", Dict("session" => S, "mode" => "insert",
+    z = call("edit", Dict("mode" => "insert",
                           "code" => "1 + 1", "delete_on_success" => true, "wait_seconds" => 0))
     @test z.status == "calculating"
     @test !haskey(z, :deleted)
-    call("edit", Dict("session" => S, "cell" => only(c.cell_id for c in z.cells),
+    call("edit", Dict("cell" => only(c.cell_id for c in z.cells),
                       "mode" => "delete", "wait_seconds" => 60))
 end
 
 @testset "errors are reported as messages, not blobs" begin
-    r = call("edit", Dict("session" => S, "mode" => "insert",
+    r = call("edit", Dict("mode" => "insert",
                           "code" => "broken = (", "wait_seconds" => 60))
     c = only(r.cells)
     @test c.status == "error"
@@ -500,42 +502,42 @@ end
     @test occursin("parseerror", c.mime)
     @test !isempty(c.error)                       # a message, not a Dict dump
     @test !occursin("Dict", c.error)
-    call("edit", Dict("session" => S, "cell" => c.cell_id, "mode" => "delete",
+    call("edit", Dict("cell" => c.cell_id, "mode" => "delete",
                       "wait_seconds" => 60))
 
-    r2 = call("edit", Dict("session" => S, "mode" => "insert",
+    r2 = call("edit", Dict("mode" => "insert",
                            "code" => "boom = error(\"kaboom\")", "wait_seconds" => 60))
     c2 = only(r2.cells)
     @test c2.status == "error"
     @test occursin("kaboom", c2.error)
     @test occursin("stacktrace", c2.mime)
-    call("edit", Dict("session" => S, "cell" => "boom", "mode" => "delete",
+    call("edit", Dict("cell" => "boom", "mode" => "delete",
                       "wait_seconds" => 60))
 end
 
 @testset "run" begin
-    r = call("run", Dict("session" => S, "cells" => ["total"], "wait_seconds" => 60))
+    r = call("run", Dict("cells" => ["total"], "wait_seconds" => 60))
     @test is_record(r)
     @test r.status == "success"
     @test any(c -> c.name == "total", r.cells)
 
-    all_r = call("run", Dict("session" => S, "wait_seconds" => 60))   # whole notebook
+    all_r = call("run", Dict("wait_seconds" => 60))   # whole notebook
     @test all_r.status == "success"
     @test length(all_r.cells) >= 3
 end
 
 @testset "short wait, then keep running" begin
-    call("edit", Dict("session" => S, "mode" => "insert",
+    call("edit", Dict("mode" => "insert",
                       "code" => "slow = (sleep(3); 99)", "wait_seconds" => 0.2))
-    r = call("read", Dict("session" => S, "cells" => ["slow"]))
+    r = call("read", Dict("cells" => ["slow"]))
     @test r.status in ("calculating", "success")
 
     # read(wait_seconds=N) is the follow-up: one call, not a poll loop.
-    done = call("read", Dict("session" => S, "cells" => ["slow"], "wait_seconds" => 30))
+    done = call("read", Dict("cells" => ["slow"], "wait_seconds" => 30))
     @test done.status == "success"
     @test done.waited_seconds >= 0
     @test only(done.cells).output == "99"
-    call("edit", Dict("session" => S, "cell" => "slow", "mode" => "delete",
+    call("edit", Dict("cell" => "slow", "mode" => "delete",
                       "wait_seconds" => 30))
 end
 
@@ -543,27 +545,27 @@ end
     # The whole point of the Task-based wait: completion is istaskdone, not a
     # guess from busy flags that read "idle" before the run had even started.
     for _ in 1:5
-        r = call("edit", Dict("session" => S, "mode" => "insert",
+        r = call("edit", Dict("mode" => "insert",
                               "code" => "quick = 1 + 1", "wait_seconds" => 30))
         @test r.status == "success"
         @test only(c.output for c in r.cells) == "2"
-        call("edit", Dict("session" => S, "cell" => "quick", "mode" => "delete",
+        call("edit", Dict("cell" => "quick", "mode" => "delete",
                           "wait_seconds" => 30))
     end
 end
 
 @testset "an error ends the wait early" begin
     t0 = time()
-    r = call("edit", Dict("session" => S, "mode" => "insert",
+    r = call("edit", Dict("mode" => "insert",
                           "code" => "fails = error(\"nope\")", "wait_seconds" => 30))
     @test time() - t0 < 25                       # did not serve out the deadline
     @test r.status == "error"
-    call("edit", Dict("session" => S, "cell" => "fails", "mode" => "delete",
+    call("edit", Dict("cell" => "fails", "mode" => "delete",
                       "wait_seconds" => 30))
 end
 
 @testset "read: snapshot, subset, tree" begin
-    r = call("read", Dict("session" => S))
+    r = call("read", Dict())
     @test is_record(r)
     @test r.status == "success"
     # Every entry carries a name and a status, in either shape; a full one also
@@ -572,10 +574,10 @@ end
     @test all(c -> haskey(c, :unchanged_since) || (haskey(c, :code) && haskey(c, :cell_id)),
               r.cells)
 
-    one = call("read", Dict("session" => S, "cells" => ["total"]))
+    one = call("read", Dict("cells" => ["total"]))
     @test length(one.cells) == 1
 
-    t = call("read", Dict("session" => S, "cells" => ["total"], "tree" => true))
+    t = call("read", Dict("cells" => ["total"], "tree" => true))
     c = only(t.cells)
     @test "a" in c.upstream["a"]
     # `*` is a reference too, and correctly so: the tree is Pluto's own
@@ -583,29 +585,28 @@ end
     @test issubset(["a", "b"], c.references)
     @test !any(r -> startswith(r, "PlutoRunner"), c.references)
 
-    a = only(call("read", Dict("session" => S, "cells" => ["a"], "tree" => true)).cells)
+    a = only(call("read", Dict("cells" => ["a"], "tree" => true)).cells)
     @test "total" in a.downstream["a"]
 end
 
 @testset "cells this session already saw compress, and since drops them" begin
-    T = "dedup"
-    call("start", Dict("session" => T))
-    opened = call("open", Dict("session" => T, "create" => true, "wait_seconds" => 120))
+    # A fresh notebook is fresh state: the maps are keyed by notebook.
+    opened = call("open", Dict("create" => true, "wait_seconds" => 120))
     @test isempty(opened.cells)                           # a new notebook is empty
 
-    ins = call("edit", Dict("session" => T, "mode" => "insert", "code" => "base = 2",
+    ins = call("edit", Dict("mode" => "insert", "code" => "base = 2",
                             "wait_seconds" => 60))
     # A cell the caller just wrote is the one exception: its code is not read
     # back to it (see "edit does not echo"), but the rest of the entry is full.
     @test !haskey(only(ins.cells), :code)
     @test haskey(only(ins.cells), :output)
-    call("edit", Dict("session" => T, "mode" => "insert", "code" => "derived = base * 3",
+    call("edit", Dict("mode" => "insert", "code" => "derived = base * 3",
                       "wait_seconds" => 60))
 
     # Looking again at state the session has already been given: every cell is
     # name, status, unchanged_since and nothing else. Compressed, not hidden --
     # the cascade stays countable.
-    again = call("read", Dict("session" => T))
+    again = call("read", Dict())
     @test length(again.cells) == 2
     @test all(c -> haskey(c, :unchanged_since) && !haskey(c, :code), again.cells)
     # ISO 8601 UTC, fixed width: lexicographic order IS chronological order.
@@ -613,7 +614,7 @@ end
 
     # A real change comes back in full -- minus the code the caller just sent
     # -- and so does the cascade it caused.
-    r = call("edit", Dict("session" => T, "cell" => "base", "code" => "base = 5",
+    r = call("edit", Dict("cell" => "base", "code" => "base = 5",
                           "wait_seconds" => 60))
     changed = only(c for c in r.cells if get(c, :name, "") == "base")
     @test !haskey(changed, :code) && get(changed, :output, "") == "5"
@@ -623,30 +624,30 @@ end
     # Re-running a cell to the SAME answer is not a change. Pluto allocates a
     # fresh object and a fresh objectid; the fingerprint deliberately ignores
     # that, because it identifies the rendered output, not the object.
-    call("run", Dict("session" => T, "cells" => ["derived"], "wait_seconds" => 60))
-    bare = call("read", Dict("session" => T))
+    call("run", Dict("cells" => ["derived"], "wait_seconds" => 60))
+    bare = call("read", Dict())
     @test haskey(only(c for c in bare.cells if c.name == "derived"), :unchanged_since)
     # ...but naming it asks to be told, so it comes back whole.
-    named = call("read", Dict("session" => T, "cells" => ["derived"]))
+    named = call("read", Dict("cells" => ["derived"]))
     @test haskey(only(named.cells), :code) && haskey(only(named.cells), :output)
 
     # `since` is the same comparison shown as a delta rather than a summary.
     # Empty is the honest answer when every record so far already delivered
     # everything -- an `edit` hands over its cascade, so there is no backlog.
-    t = call("read", Dict("session" => T)).timestamp
-    @test isempty(call("read", Dict("session" => T, "since" => t)).cells)
+    t = call("read", Dict()).timestamp
+    @test isempty(call("read", Dict("since" => t)).cells)
 
     # A string that is not a timestamp is refused with the shape it wanted.
-    bad = call("read", Dict("session" => T, "since" => "yesterday"))
+    bad = call("read", Dict("since" => "yesterday"))
     @test bad.error && occursin("timestamp", bad.message)
 
     # A change made OUTSIDE the tools -- what a browser patch does -- was never
     # delivered, so it is genuinely new and arrives in full.
-    nb = P._notebook(T)
+    nb = P._notebook()
     cell = P.resolve_cell(nb, "base")
     cell.code = "base = 7"
-    Pluto.update_save_run!(P._session(T).session, nb, Pluto.Cell[cell]; run_async=false)
-    delta = call("read", Dict("session" => T, "since" => t))
+    Pluto.update_save_run!(P.session().session, nb, Pluto.Cell[cell]; run_async=false)
+    delta = call("read", Dict("since" => t))
     @test is_record(delta)
     @test "base" in [c.name for c in delta.cells]
     # Deltas are never compact -- though code this session wrote is still not
@@ -659,47 +660,48 @@ end
     # them, and refusing one would only lose a delta. Asked LAST, because a read
     # is not free of consequence -- it reports, and reporting is what makes the
     # next record able to leave things out.
-    @test isempty(call("read", Dict("session" => T, "since" => P.parse_timestamp(t))).cells)
+    @test isempty(call("read", Dict("since" => P.parse_timestamp(t))).cells)
 
-    call("stop", Dict("session" => T))
-    @test !any(k -> first(k) == T, keys(P.REPORTED))
+    dedup_nb = P._notebook()
+    call("stop", Dict("notebook" => basename(dedup_nb.path)))
+    @test !haskey(P.REPORTED, dedup_nb.notebook_id)
+    call("open", Dict("path" => MAIN[], "wait_seconds" => 60))   # back to the main notebook
 end
 
 @testset "a container that re-runs to the same value fingerprints the same" begin
     # The objectid case, isolated: ones(5) allocates a new array every run, so a
     # fingerprint over Pluto's raw tree body would call this changed forever.
-    T = "dedup-objectid"
-    call("start", Dict("session" => T))
-    call("open", Dict("session" => T, "create" => true, "wait_seconds" => 120))
-    call("edit", Dict("session" => T, "mode" => "insert", "code" => "vals = ones(5)",
+    call("open", Dict("create" => true, "wait_seconds" => 120))
+    call("edit", Dict("mode" => "insert", "code" => "vals = ones(5)",
                       "wait_seconds" => 60))
-    call("read", Dict("session" => T))
-    call("run", Dict("session" => T, "cells" => ["vals"], "wait_seconds" => 60))
+    call("read", Dict())
+    call("run", Dict("cells" => ["vals"], "wait_seconds" => 60))
     # A bare read is where compaction shows: naming the cell asks to be told
     # about it, and is answered in full.
-    bare = call("read", Dict("session" => T))
+    bare = call("read", Dict())
     @test haskey(only(c for c in bare.cells if c.name == "vals"), :unchanged_since)
-    call("stop", Dict("session" => T))
+    call("stop", Dict("notebook" => basename(P._notebook().path)))
+    call("open", Dict("path" => MAIN[], "wait_seconds" => 60))   # back to the main notebook
 end
 
 @testset "read: a human's browser edit comes back with old_code and code" begin
-    t0 = call("read", Dict("session" => S)).timestamp
+    t0 = call("read", Dict()).timestamp
 
     # An edit made THROUGH our own tools is pre-marked as seen, so it must not
     # come back as a change: `since` reports what a HUMAN did, not an echo.
-    call("edit", Dict("session" => S, "cell" => "a", "code" => "a = 5",
+    call("edit", Dict("cell" => "a", "code" => "a = 5",
                       "wait_seconds" => 60))
-    mine = call("read", Dict("session" => S, "since" => t0))
+    mine = call("read", Dict("since" => t0))
     @test !any(c -> haskey(c, :old_code), mine.cells)
 
-    t1 = call("read", Dict("session" => S)).timestamp
+    t1 = call("read", Dict()).timestamp
     # A change made OUTSIDE our tools -- exactly what a browser patch does.
-    nb = P._notebook(S)
+    nb = P._notebook()
     cell = P.resolve_cell(nb, "a")
     cell.code = "a = 9"
-    Pluto.update_save_run!(P._session(S).session, nb, Pluto.Cell[cell]; run_async=false)
+    Pluto.update_save_run!(P.session().session, nb, Pluto.Cell[cell]; run_async=false)
 
-    theirs = call("read", Dict("session" => S, "since" => t1))
+    theirs = call("read", Dict("since" => t1))
     @test is_record(theirs)
     edited = only(c for c in theirs.cells if get(c, :change, nothing) == "edited")
     @test edited.name == "a"
@@ -711,44 +713,44 @@ end
     # A report asked for BY NAME answers with those cells. A human deleting
     # some other cell is real news, but it is not what this call asked about --
     # and a synthesised entry for it would land in every later targeted read.
-    call("edit", Dict("session" => S, "mode" => "insert",
+    call("edit", Dict("mode" => "insert",
                       "code" => "doomed = 1", "wait_seconds" => 60))
-    nb2 = P._notebook(S)
+    nb2 = P._notebook()
     doomed = P.resolve_cell(nb2, "doomed")
     Pluto.withtoken(nb2.executetoken) do
         deleteat!(nb2.cell_order, findfirst(==(doomed.cell_id), nb2.cell_order))
         delete!(nb2.cells_dict, doomed.cell_id)
     end
-    Pluto.update_save_run!(P._session(S).session, nb2, Pluto.Cell[doomed]; run_async=false)
-    named = call("read", Dict("session" => S, "cells" => ["a"]))
+    Pluto.update_save_run!(P.session().session, nb2, Pluto.Cell[doomed]; run_async=false)
+    named = call("read", Dict("cells" => ["a"]))
     @test only(named.cells).name == "a"
 
     # A bare read DOES report the deletion, old_code and all -- once. The
     # CHANGES log keeps the entry for `since` arithmetic, but the reference
     # point is the agent's context: a second bare read repeating a cell that is
     # no longer in the notebook would be noise, not news.
-    gone = call("read", Dict("session" => S))
+    gone = call("read", Dict())
     @test any(c -> get(c, :change, nothing) == "deleted" &&
                    get(c, :old_code, "") == "doomed = 1", gone.cells)
-    again = call("read", Dict("session" => S))
+    again = call("read", Dict())
     @test !any(c -> get(c, :change, nothing) == "deleted", again.cells)
 end
 
 @testset "reads reflect the live notebook" begin
     # Mutate the Notebook directly, the way Pluto's frontend patches do, and
     # confirm a read sees it with no refresh step of any kind.
-    nb = P._notebook(S)
+    nb = P._notebook()
     P.resolve_cell(nb, "a").code = "a = 12345"
     @test any(c -> get(c, :code, "") == "a = 12345",
-              call("read", Dict("session" => S)).cells)
+              call("read", Dict()).cells)
     P.resolve_cell(nb, "a").code = "a = 6"
-    call("run", Dict("session" => S, "cells" => ["a"], "wait_seconds" => 60))
+    call("run", Dict("cells" => ["a"], "wait_seconds" => 60))
 end
 
 @testset "output rendering: sketches, not dumps" begin
     # The insert's own record is where the sketch appears: a later read would
     # compact this cell, having already delivered it.
-    r = call("edit", Dict("session" => S, "mode" => "insert",
+    r = call("edit", Dict("mode" => "insert",
                           "code" => "vec = collect(1.0:100000.0)", "wait_seconds" => 60))
     sketched = only(c.output for c in r.cells if get(c, :name, "") == "vec")
     @test occursin("Vector{Float64}", sketched)
@@ -758,7 +760,7 @@ end
 
     # `output` is the VALUE, as Julia prints it, fetched from the worker --
     # 100k elements is far past the inline limit, so it spills and names a path.
-    full = cell_output(S, "vec")
+    full = cell_output("vec")
     # The exact spelling is Julia's business -- Vector{Float64} or
     # Array{Float64, 1} -- and pinning it here would be this suite deciding
     # something the principle says it does not decide.
@@ -769,17 +771,17 @@ end
     @test occursin("100000.0", read(path, String))       # the real last element
     @test !occursin("Dict{Symbol", full)
 
-    call("edit", Dict("session" => S, "mode" => "insert",
+    call("edit", Dict("mode" => "insert",
                       "code" => "tup = (x=1, y=\"two\", z=[1,2,3])", "wait_seconds" => 60))
     # Julia's own printing, not our sketch: nested containers are complete.
-    @test cell_output(S, "tup") == "(x = 1, y = \"two\", z = [1, 2, 3])"
+    @test cell_output("tup") == "(x = 1, y = \"two\", z = [1, 2, 3])"
 
 end
 
 @testset "rendered markup never comes back" begin
     # A markdown cell's rendering IS the prose the agent just wrote, re-encoded.
     # The record says what mime it produced and stops there.
-    r = call("edit", Dict("session" => S, "mode" => "insert",
+    r = call("edit", Dict("mode" => "insert",
                           "code" => "md\"\"\"\n# Findings\n\nThe **mean** over \$(2+3) runs was significant.\n\"\"\"",
                           "wait_seconds" => 60))
     c = only(r.cells)
@@ -789,19 +791,19 @@ end
 
     # ...and it needs no special case to be readable: the cell's VALUE is a
     # Markdown.MD, which Julia prints as text on its own.
-    shown = call("output", Dict("session" => S, "cell" => String(c.cell_id),
+    shown = call("output", Dict("cell" => String(c.cell_id),
                                 "mime" => "text/plain"))
     @test occursin("Findings", shown.output)
     @test occursin("5", shown.output)    # the interpolation did run
     @test !occursin("<h1", shown.output)
 
-    w = call("edit", Dict("session" => S, "mode" => "insert",
+    w = call("edit", Dict("mode" => "insert",
                           "code" => "html\"<table><tr><td>a</td><td>1</td></tr></table>\"",
                           "wait_seconds" => 60))
     @test !haskey(only(w.cells), :output)
 
     for id in (c.cell_id, only(w.cells).cell_id)
-        call("edit", Dict("session" => S, "cell" => String(id), "mode" => "delete",
+        call("edit", Dict("cell" => String(id), "mode" => "delete",
                           "wait_seconds" => 60))
     end
 end
@@ -809,18 +811,18 @@ end
 @testset "output reaches a cell that defines no name" begin
     # The value is fetched by cell_id from the worker, so a `let` block with no
     # name is as readable as a global -- which a lookup by variable never was.
-    r = call("edit", Dict("session" => S, "mode" => "insert",
+    r = call("edit", Dict("mode" => "insert",
                           "code" => "let\n    collect(1:5) .^ 2\nend", "wait_seconds" => 60))
     id = only(r.cells).cell_id
     @test only(r.cells).name == id            # no global, so it is named by its id
-    full = call("output", Dict("session" => S, "cell" => String(id), "mime" => "text/plain"))
+    full = call("output", Dict("cell" => String(id), "mime" => "text/plain"))
     @test occursin("25", full.output)
-    call("edit", Dict("session" => S, "cell" => String(id), "mode" => "delete",
+    call("edit", Dict("cell" => String(id), "mode" => "delete",
                       "wait_seconds" => 60))
 end
 
 @testset "output: one cell, complete" begin
-    r = call("output", Dict("session" => S, "cell" => "total", "mime" => "text/plain"))
+    r = call("output", Dict("cell" => "total", "mime" => "text/plain"))
     @test r.cell == "total"
     @test r.output == "42"
     @test r.status == "success"
@@ -830,10 +832,10 @@ end
     # through `repr` with :limit, so it arrives already shortened and there is
     # nothing left for us to spill. Text is stored whole, which is the case
     # this guard exists for.
-    call("edit", Dict("session" => S, "mode" => "insert",
+    call("edit", Dict("mode" => "insert",
                       "code" => "long = Text(join(string.(1:20000), \"\\n\"))",
                       "wait_seconds" => 60))
-    big = call("output", Dict("session" => S, "cell" => "long", "mime" => "text/plain"))
+    big = call("output", Dict("cell" => "long", "mime" => "text/plain"))
     @test occursin("full output:", big.output)
     # The marker is `… (<size> total, full output: <path>)` -- take the path up
     # to the closing paren, not to the next space.
@@ -843,15 +845,15 @@ end
     @test occursin("20000", big.output)              # the tail survived
     @test startswith(big.output, "1\n2\n3\n")        # ...and so did the head
     @test read(path, String) == join(string.(1:20000), "\n")   # the file is whole
-    call("edit", Dict("session" => S, "cell" => "long", "mode" => "delete",
+    call("edit", Dict("cell" => "long", "mode" => "delete",
                       "wait_seconds" => 60))
 
     # A value PLUTO shortened for its own display is complete here: the record
     # carries Pluto's summary, `output` asks the worker for the value itself.
-    call("edit", Dict("session" => S, "mode" => "insert",
+    call("edit", Dict("mode" => "insert",
                       "code" => "shortened = join(string.(1:20000), \"\\n\")",
                       "wait_seconds" => 60))
-    s = call("output", Dict("session" => S, "cell" => "shortened", "mime" => "text/plain"))
+    s = call("output", Dict("cell" => "shortened", "mime" => "text/plain"))
     @test occursin("full output:", s.output)         # spilled, not elided
     whole = read(match(r"full output: ([^)]+)\)", s.output)[1], String)
     # Julia displays a String quoted and escaped, so the newlines arrive as
@@ -860,11 +862,11 @@ end
     # two-renderers rule forbids.
     @test occursin("20000", whole) && occursin("1\\n2\\n", whole)
     @test !occursin("\e[", s.output)
-    call("edit", Dict("session" => S, "cell" => "shortened", "mode" => "delete",
+    call("edit", Dict("cell" => "shortened", "mode" => "delete",
                       "wait_seconds" => 60))
 
     # A print blob is a log entry, and hits the same one truncation function.
-    r = call("edit", Dict("session" => S, "mode" => "insert",
+    r = call("edit", Dict("mode" => "insert",
                           "code" => "printy = (println(\"p\"^9000); 3)", "wait_seconds" => 60))
     # The print may not have been flushed when the edit returned; whichever
     # record first carries it is the one to read, and a later read compacts a
@@ -872,20 +874,20 @@ end
     logs = get(only(c for c in r.cells if get(c, :name, "") == "printy"), :logs, nothing)
     for _ in 1:150
         logs === nothing || break
-        logs = get(only(call("read", Dict("session" => S, "cells" => ["printy"])).cells),
+        logs = get(only(call("read", Dict("cells" => ["printy"])).cells),
                    :logs, nothing)
         logs === nothing && sleep(0.1)
     end
     @test logs !== nothing
     @test occursin("full output:", only(logs).msg)
-    call("edit", Dict("session" => S, "cell" => "printy", "mode" => "delete",
+    call("edit", Dict("cell" => "printy", "mode" => "delete",
                       "wait_seconds" => 60))
 
-    @test call("output", Dict("session" => S, "cell" => "no-such-cell", "mime" => "text/plain")).error
+    @test call("output", Dict("cell" => "no-such-cell", "mime" => "text/plain")).error
 end
 
 @testset "logs: structured, capped, counted" begin
-    r = call("edit", Dict("session" => S, "mode" => "insert",
+    r = call("edit", Dict("mode" => "insert",
         "code" => "noisy = begin; for i in 1:100; @info \"step\" i=i; end; println(\"done\"); 7; end",
         "wait_seconds" => 60))
     # Pluto delivers a cell's log entries on its own throttled schedule, AFTER
@@ -897,7 +899,7 @@ end
     for _ in 1:150
         settled(c) && break
         sleep(0.1)
-        c = only(call("read", Dict("session" => S, "cells" => ["noisy"])).cells)
+        c = only(call("read", Dict("cells" => ["noisy"])).cells)
     end
     @test settled(c)
     @test c.output == "7"
@@ -910,7 +912,7 @@ end
     @test occursin("earlier entries", c.logs_dropped)
     dropped = match(r"→ (.+)$", c.logs_dropped)
     @test dropped !== nothing && isfile(dropped[1])
-    call("edit", Dict("session" => S, "cell" => "noisy", "mode" => "delete",
+    call("edit", Dict("cell" => "noisy", "mode" => "delete",
                       "wait_seconds" => 60))
 end
 
@@ -919,18 +921,18 @@ end
     # screenful of <path d="..."> is not a smaller version of the picture, it
     # is a picture nobody gets -- so `output` names the shape and the way out.
     # A type that can only show as SVG stands in for the plotting library.
-    call("edit", Dict("session" => S, "mode" => "insert", "wait_seconds" => 60,
+    call("edit", Dict("mode" => "insert", "wait_seconds" => 60,
                       "code" => "struct TinySVG end"))
-    rshow = call("edit", Dict("session" => S, "mode" => "insert", "wait_seconds" => 60,
+    rshow = call("edit", Dict("mode" => "insert", "wait_seconds" => 60,
                       "code" => "Base.show(io::IO, ::MIME\"image/svg+xml\", ::TinySVG) = " *
                                 "print(io, \"<svg xmlns='http://www.w3.org/2000/svg'>\" * " *
                                 "repeat(\"<path d='M0 0 L9 9'/>\", 200) * \"</svg>\")"))
-    r0 = call("edit", Dict("session" => S, "mode" => "insert", "wait_seconds" => 60,
+    r0 = call("edit", Dict("mode" => "insert", "wait_seconds" => 60,
                            "code" => "svgfig = TinySVG()"))
     @test only(c.mime for c in r0.cells if c.name == "svgfig") == "image/svg+xml"
 
     # TinySVG cannot show as PNG, so `output` says so by listing what it can be.
-    r = call("output", Dict("session" => S, "cell" => "svgfig", "mime" => "image/png"))
+    r = call("output", Dict("cell" => "svgfig", "mime" => "image/png"))
     @test !occursin("<path", string(r))          # not one screenful of it, either
     # It cannot be a PNG, so the answer is what it CAN be -- data, not advice.
     @test "image/svg+xml" in r.shows_as
@@ -939,12 +941,12 @@ end
 
     # ...and asking for what it CAN do returns the XML, because render is just
     # `show(io, MIME(mime), value)`.
-    xml = call("output", Dict("session" => S, "cell" => "svgfig", "mime" => "image/svg+xml"))
+    xml = call("output", Dict("cell" => "svgfig", "mime" => "image/svg+xml"))
     @test occursin("<svg", xml.output)
 
     # `path` writes it to a file at any size, which is how a figure is saved.
     out = tempname() * ".svg"
-    saved = call("output", Dict("session" => S, "cell" => "svgfig",
+    saved = call("output", Dict("cell" => "svgfig",
                                 "mime" => "image/svg+xml", "path" => out))
     @test saved.path == out && isfile(out) && saved.bytes > 1000
     @test occursin("<svg", read(out, String))
@@ -953,7 +955,7 @@ end
     # The method cell defines no global, so it is addressed by id -- and it goes
     # FIRST: left behind, it would error the moment TinySVG stopped existing.
     for n in (only(c.cell_id for c in rshow.cells), "svgfig", "TinySVG")
-        call("edit", Dict("session" => S, "cell" => n, "mode" => "delete",
+        call("edit", Dict("cell" => n, "mode" => "delete",
                           "wait_seconds" => 60))
     end
 end
@@ -961,21 +963,21 @@ end
 @testset "output renders a figure to PNG instead of describing it" begin
     # A type that CAN show as PNG stands in for a plotting library: `output`
     # asks it for the picture rather than telling the agent to go and ask.
-    call("edit", Dict("session" => S, "mode" => "insert", "wait_seconds" => 60,
+    call("edit", Dict("mode" => "insert", "wait_seconds" => 60,
                       "code" => "struct BothWays end"))
-    rshow = call("edit", Dict("session" => S, "mode" => "insert", "wait_seconds" => 60,
+    rshow = call("edit", Dict("mode" => "insert", "wait_seconds" => 60,
                       "code" => "begin\n" *
                                 "Base.show(io::IO, ::MIME\"image/svg+xml\", ::BothWays) = print(io, \"<svg/>\")\n" *
                                 "Base.show(io::IO, ::MIME\"image/png\", ::BothWays) = write(io, UInt8[0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a])\n" *
                                 "end"))
-    call("edit", Dict("session" => S, "mode" => "insert", "wait_seconds" => 60,
+    call("edit", Dict("mode" => "insert", "wait_seconds" => 60,
                       "code" => "bothfig = BothWays()"))
-    r = call("output", Dict("session" => S, "cell" => "bothfig", "mime" => "image/png"))
+    r = call("output", Dict("cell" => "bothfig", "mime" => "image/png"))
     @test r.mime_type == "image/png"      # ImageContent, not a JSON record
     @test r.data isa Vector{UInt8} && !isempty(r.data)
 
     for n in (only(c.cell_id for c in rshow.cells), "bothfig", "BothWays")
-        call("edit", Dict("session" => S, "cell" => n, "mode" => "delete",
+        call("edit", Dict("cell" => n, "mode" => "delete",
                           "wait_seconds" => 60))
     end
 end
@@ -984,32 +986,32 @@ end
     # Installing a package restarts the notebook PROCESS, so `Main.PlutoMCP`
     # goes away and injecting once at `open` is not enough. `unmake_workspace`
     # is that restart, without the minutes a real Pkg install would cost.
-    nb = P._notebook(S)
-    old_worker = Pluto.WorkspaceManager.get_workspace((P._session(S).session, nb)).worker
-    Pluto.WorkspaceManager.unmake_workspace((P._session(S).session, nb); async=false, verbose=false)
+    nb = P._notebook()
+    old_worker = Pluto.WorkspaceManager.get_workspace((P.session().session, nb)).worker
+    Pluto.WorkspaceManager.unmake_workspace((P.session().session, nb); async=false, verbose=false)
     @test !Pluto.Malt.isrunning(old_worker)
 
     # A value lives in the worker, so a restart destroys every one of them:
     # until something re-runs, `output` has nothing to reach and says so. The
     # record is unaffected -- Pluto's stored renderings outlive the process.
-    call("read", Dict("session" => S, "wait_seconds" => 120))
-    @test call("output", Dict("session" => S, "cell" => "total",
+    call("read", Dict("wait_seconds" => 120))
+    @test call("output", Dict("cell" => "total",
                               "mime" => "text/plain")).error
 
     # Re-run, and `output` answers again -- which takes the render helper in
     # the NEW process, injected on demand.
-    call("run", Dict("session" => S, "wait_seconds" => 120))
-    @test cell_output(S, "total") == "42"
+    call("run", Dict("wait_seconds" => 120))
+    @test cell_output("total") == "42"
 end
 
 @testset "bond: set slider/widget values" begin
-    call("edit", Dict("session" => S, "mode" => "insert",
+    call("edit", Dict("mode" => "insert",
                       "code" => "slider = @bind slider html\"<input type=range>\"",
                       "wait_seconds" => 60))
-    call("edit", Dict("session" => S, "mode" => "insert",
+    call("edit", Dict("mode" => "insert",
                       "code" => "doubled_bond = slider * 2", "wait_seconds" => 60))
 
-    r = call("bond", Dict("session" => S, "name" => "slider", "value" => 7,
+    r = call("bond", Dict("name" => "slider", "value" => 7,
                           "wait_seconds" => 60))
     @test is_record(r)
     @test r.status == "success"
@@ -1017,11 +1019,11 @@ end
     # The cascade the bond caused is in the record itself, without a re-read.
     @test any(c -> c.name == "doubled_bond" && c.output == "14", r.cells)
 
-    r2 = call("bond", Dict("session" => S, "name" => "slider", "value" => 10,
+    r2 = call("bond", Dict("name" => "slider", "value" => 10,
                            "wait_seconds" => 60))
     @test any(c -> c.name == "doubled_bond" && c.output == "20", r2.cells)
 
-    @test call("bond", Dict("session" => S, "name" => "not_a_bond", "value" => 1)).error
+    @test call("bond", Dict("name" => "not_a_bond", "value" => 1)).error
 
     # The value is passed through exactly as given, with no type coercion --
     # deliberately. Pluto's own transform_bond_value does no string->number
@@ -1029,76 +1031,84 @@ end
     # nothing in a string tells "the number 7, sent as a string" apart from
     # "the text '7', typed into a genuinely textual field". Both cases below
     # prove pass-through: the second only works BECAUSE it stayed a string.
-    call("edit", Dict("session" => S, "mode" => "insert",
+    call("edit", Dict("mode" => "insert",
                       "code" => "greeting = @bind greeting html\"<input type=text>\"",
                       "wait_seconds" => 60))
-    call("edit", Dict("session" => S, "mode" => "insert",
+    call("edit", Dict("mode" => "insert",
                       "code" => "shout = greeting * \"!\"", "wait_seconds" => 60))
-    g = call("bond", Dict("session" => S, "name" => "greeting", "value" => "hello",
+    g = call("bond", Dict("name" => "greeting", "value" => "hello",
                           "wait_seconds" => 60))
     @test any(c -> c.name == "shout" && c.output == "\"hello!\"", g.cells)
-    g2 = call("bond", Dict("session" => S, "name" => "greeting", "value" => "7",
+    g2 = call("bond", Dict("name" => "greeting", "value" => "7",
                            "wait_seconds" => 60))
     @test any(c -> c.name == "shout" && c.output == "\"7!\"", g2.cells)
 
     for n in ("shout", "greeting", "doubled_bond", "slider")
-        call("edit", Dict("session" => S, "cell" => n, "mode" => "delete",
+        call("edit", Dict("cell" => n, "mode" => "delete",
                           "wait_seconds" => 60))
     end
 end
 
-@testset "export: self-contained HTML" begin
-    r = call("export", Dict("session" => S))
-    @test is_record(r)
-    @test isfile(r.exported)
-    @test r.bytes > 1000
-    html = read(r.exported, String)
-    @test occursin("<html", lowercase(html))
-    rm(r.exported; force=true)
-
+@testset "the notebook itself renders, with no cell named" begin
+    # A notebook shown as text/html IS the self-contained export, and as
+    # text/plain it is the .jl source. Same tool, same rule, one level up --
+    # which is why there is no `export`.
     out = tempname() * ".html"
-    @test call("export", Dict("session" => S, "path" => out)).exported == out
+    r = call("output", Dict("mime" => "text/html", "path" => out))
+    @test r.path == out && isfile(out) && r.bytes > 1000
+    @test occursin("<html", lowercase(read(out, String)))
     rm(out; force=true)
+
+    src = call("output", Dict("mime" => "text/plain"))
+    @test occursin("### A Pluto.jl notebook ###", src.output)
+    @test occursin("Cell order:", src.output)     # the real file format
+
+    # A notebook is not a figure, and says so rather than guessing.
+    @test call("output", Dict("mime" => "image/png")).error
 end
 
-@testset "multiple notebooks per session" begin
-    T = "multi"
-    call("start", Dict("session" => T))
-    one = call("open", Dict("session" => T, "create" => true, "wait_seconds" => 120))
-    call("edit", Dict("session" => T, "mode" => "insert",
+@testset "multiple notebooks at once" begin
+    one = call("open", Dict("create" => true, "wait_seconds" => 120))
+    call("edit", Dict("mode" => "insert",
                       "code" => "which = 1", "wait_seconds" => 60))
-    two = call("open", Dict("session" => T, "create" => true, "wait_seconds" => 120))
-    call("edit", Dict("session" => T, "mode" => "insert",
+    two = call("open", Dict("create" => true, "wait_seconds" => 120))
+    call("edit", Dict("mode" => "insert",
                       "code" => "which = 2", "wait_seconds" => 60))
 
-    l = call("list", Dict("session" => T))
-    @test length(l) == 2
+    l = call("list", Dict())
+    # Both are listed, exactly one is current, and every entry names a FILE --
+    # a notebook_id is Pluto's internal handle and means nothing to a reader.
+    @test issubset([one.path, two.path], [n.path for n in l])
     @test count(n -> n.current, l) == 1
+    @test all(n -> haskey(n, :path) && !haskey(n, :notebook_id), l)
 
     # The second open is current; the first is still reachable by path.
-    @test cell_output(T, "which") == "2"
-    @test call("output", Dict("session" => T, "cell" => "which", "mime" => "text/plain",
+    @test cell_output("which") == "2"
+    @test call("output", Dict("cell" => "which", "mime" => "text/plain",
                               "notebook" => basename(one.path))).output == "1"
 
-    # Regression: CHANGES/SNAPSHOTS are keyed per NOTEBOOK. A shared per-session
-    # log would report every cell of the other notebook as freshly deleted the
-    # moment either one fired a state change.
-    t0 = call("read", Dict("session" => T)).timestamp
-    call("edit", Dict("session" => T, "mode" => "insert",
+    # Regression: CHANGES/SNAPSHOTS are keyed per NOTEBOOK. A shared log would
+    # report every cell of the other notebook as freshly deleted the moment
+    # either one fired a state change.
+    t0 = call("read", Dict()).timestamp
+    call("edit", Dict("mode" => "insert",
                       "code" => "extra = 3", "wait_seconds" => 60))
     for ref in (one.path, two.path)
-        r = call("read", Dict("session" => T, "notebook" => basename(ref), "since" => t0))
+        r = call("read", Dict("notebook" => basename(ref), "since" => t0))
         @test !any(c -> get(c, :change, nothing) == "deleted", r.cells)
     end
 
-    call("stop", Dict("session" => T))
+    for ref in (one.path, two.path)
+        call("stop", Dict("notebook" => basename(ref)))
+    end
+    call("open", Dict("path" => MAIN[], "wait_seconds" => 60))   # back to the main notebook
 end
 
 @testset "a missing required argument errors instead of crashing" begin
     for tool in P.ALL_TOOLS
         req = [p.name for p in tool.parameters if p.required]
         isempty(req) && continue
-        r = call(tool.name, Dict("session" => S))
+        r = call(tool.name, Dict())
         @test r isa JSON3.Object && r.error
     end
 end
@@ -1109,9 +1119,8 @@ end
     for (name, args) in (("read", Dict()),
                          ("run", Dict("cells" => ["total"], "wait_seconds" => 60)),
                          ("edit", Dict("cell" => "total", "code" => "total = a * b",
-                                       "wait_seconds" => 60)),
-                         ("export", Dict("path" => tempname() * ".html")))
-        r = call(name, merge(Dict{String,Any}("session" => S), args))
+                                       "wait_seconds" => 60)))
+        r = call(name, Dict{String,Any}(args))
         @test is_record(r)
         @test r.status in ("pending", "calculating", "success", "error")
         # A real server clock, for `since` -- ISO 8601 UTC with milliseconds.
@@ -1122,32 +1131,32 @@ end
 
 @testset "stop narrows by argument" begin
     # A cell to interrupt: sleep long enough that the stop lands mid-run.
-    call("edit", Dict("session" => S, "mode" => "insert",
+    call("edit", Dict("mode" => "insert",
                       "code" => "napping = (sleep(30); :done)", "wait_seconds" => 0.3))
-    r = call("stop", Dict("session" => S, "notebook" => basename(P._notebook(S).path),
+    r = call("stop", Dict("notebook" => basename(P._notebook().path),
                           "cell" => "napping"))
     @test is_record(r)
     @test r.stopped == "cell"
-    @test call("read", Dict("session" => S, "cells" => ["napping"],
+    @test call("read", Dict("cells" => ["napping"],
                             "wait_seconds" => 20)).status in ("error", "success")
-    call("edit", Dict("session" => S, "cell" => "napping", "mode" => "delete",
+    call("edit", Dict("cell" => "napping", "mode" => "delete",
                       "wait_seconds" => 30))
 
     # stop(notebook): that notebook only, and its spill files with it.
-    two = call("open", Dict("session" => S, "create" => true, "wait_seconds" => 120))
-    spill = P.spill_dir(P._notebook(S))
+    two = call("open", Dict("create" => true, "wait_seconds" => 120))
+    spill = P.spill_dir(P._notebook())
     mkpath(spill); write(joinpath(spill, "x.txt"), "x")
-    n = length(call("list", Dict("session" => S)))
-    d = call("stop", Dict("session" => S, "notebook" => basename(two.path)))
+    n = length(call("list", Dict()))
+    d = call("stop", Dict("notebook" => basename(two.path)))
     @test d.stopped == "notebook"
-    @test length(call("list", Dict("session" => S))) == n - 1
+    @test length(call("list", Dict())) == n - 1
     @test !isdir(spill)
 
     # stop(cell) without a notebook is a refusal, not a guess at which one.
-    @test call("stop", Dict("session" => S, "cell" => "anything")).error
+    @test call("stop", Dict("cell" => "anything")).error
 
     # ...and with no arguments, everything.
-    @test call("stop", Dict("session" => S)).stopped == "session"
-    @test call("read", Dict("session" => S)).error
-    @test call("stop", Dict("session" => S)).error      # stopping twice is refused
+    @test call("stop", Dict()).stopped == "server"
+    @test call("read", Dict()).error
+    @test call("stop", Dict()).error      # stopping twice is refused
 end

@@ -21,53 +21,54 @@ attached.
 
 # ------------------------------------------------------------------ sessions --
 
-# session name => the server, the Pluto session, and the notebook it is driving
-const SESSIONS = Dict{String,Any}()
+# The one server this process runs, or nothing. One process, one client, one
+# server: a stdio MCP server has no second tenant to keep apart, and a name for
+# the only session there can be is a parameter on every tool that never varies.
+const SERVER = Ref{Any}(nothing)
 
-# (session name, notebook_id) => log of cell-level edits seen via
+# notebook_id => log of cell-level edits seen via
 # StateChangeEvent, oldest first. A DROPPING buffer: a notification path must
-# never be able to block the thing it observes. Keyed per notebook, not just
-# per session -- a session can have several open (see `list`), and a shared log
-# would read every OTHER notebook's cells as freshly deleted the moment any one
-# of them fired an event, since they are absent from that event's `nb.cells`.
-const CHANGES = Dict{Tuple{String,Base.UUID},Vector{NamedTuple}}()
+# never be able to block the thing it observes. Keyed per notebook: several can be
+# open at once, and a shared log would read every OTHER notebook's cells as
+# freshly deleted the moment any one of them fired an event, since they are
+# absent from that event's `nb.cells`.
+const CHANGES = Dict{Base.UUID,Vector{NamedTuple}}()
 const CHANGES_MAX = 256
 
-# (session name, notebook_id) => cell_id => code, as of the last
+# notebook_id => cell_id => code, as of the last
 # StateChangeEvent. Lets the event hook tell an edit apart from a mere state
 # transition (queued/running), and reconstructs the pair `read` reports as
-# `old_code` and `code`. Same per-notebook keying as CHANGES, for the same reason.
-const SNAPSHOTS = Dict{Tuple{String,Base.UUID},Dict{Base.UUID,String}}()
+# `old_code` and `code`.
+const SNAPSHOTS = Dict{Base.UUID,Dict{Base.UUID,String}}()
 
 """
-    _mark_seen!(name, notebook_id, cell_id, code)
+    _mark_seen!(notebook_id, cell_id, code)
 
 Record `code` as already-known for `cell_id` before running it, so the
 StateChangeEvent that follows does not report our own edit back to us as a
 change. The change log exists to tell the agent what a HUMAN did while it was
 not looking; an edit the agent just made through these tools is not that.
 """
-function _mark_seen!(name::AbstractString, notebook_id::Base.UUID, cell_id, code::AbstractString)
-    snap = get!(SNAPSHOTS, (String(name), notebook_id), Dict{Base.UUID,String}())
+function _mark_seen!(notebook_id::Base.UUID, cell_id, code::AbstractString)
+    snap = get!(SNAPSHOTS, notebook_id, Dict{Base.UUID,String}())
     snap[cell_id] = code
     return nothing
 end
 
 "Drop a cell from the snapshot, so its removal is not reported as a deletion."
-function _forget_seen!(name::AbstractString, notebook_id::Base.UUID, cell_id)
-    key = (String(name), notebook_id)
-    haskey(SNAPSHOTS, key) && delete!(SNAPSHOTS[key], cell_id)
+function _forget_seen!(notebook_id::Base.UUID, cell_id)
+    haskey(SNAPSHOTS, notebook_id) && delete!(SNAPSHOTS[notebook_id], cell_id)
     return nothing
 end
 
 """
-    _note_change!(name, nb)
+    _note_change!(nb)
 
-Diff `nb` against the last-seen snapshot for this (session, notebook) and
+Diff `nb` against the last-seen snapshot for this notebook and
 append one entry per inserted, edited or deleted cell to `CHANGES`. Runs on
 every `StateChangeEvent`, for whichever notebook it fired on -- keyed by
-notebook_id, not just session, so a change in one open notebook cannot appear
-as every OTHER open notebook's cells having just been deleted. A
+notebook_id, so a change in one open notebook cannot appear as every OTHER open
+notebook's cells having just been deleted. A
 tool-initiated edit already updated the snapshot via `_mark_seen!` before
 running, so it diffs to nothing here -- what is left is what a human changed
 in the browser while nobody was looking.
@@ -79,11 +80,10 @@ record a field no reader uses, would tax the thing it observes. The new code
 is deliberately absent too: the record's `code` is the cell's text as it is
 now, and a stale copy must never be able to override it.
 """
-function _note_change!(name::String, nb::Pluto.Notebook)
+function _note_change!(nb::Pluto.Notebook)
     t = time()
-    key = (name, nb.notebook_id)
-    snap = get!(SNAPSHOTS, key, Dict{Base.UUID,String}())
-    log = get!(CHANGES, key, NamedTuple[])
+    snap = get!(SNAPSHOTS, nb.notebook_id, Dict{Base.UUID,String}())
+    log = get!(CHANGES, nb.notebook_id, NamedTuple[])
     seen = Set{Base.UUID}()
     for c in nb.cells
         push!(seen, c.cell_id)
@@ -116,7 +116,7 @@ function _free_port()
 end
 
 """
-    start_session(name; port=nothing) -> session record
+    start_session(; port=nothing) -> server record
 
 Start a Pluto server in this process. The HTTP server exists only so a human
 can open the notebook in a browser; nothing here talks to it over the network.
@@ -124,30 +124,29 @@ can open the notebook in a browser; nothing here talks to it over the network.
 Registers an `on_event` hook first, so changes are observable from the moment
 the session exists rather than from the first time someone asks.
 
-Calling this twice for the same `name` stops whatever was already running
-under it first -- otherwise SESSIONS[nm] would just be overwritten, leaking
-the previous server and every notebook worker process it owned.
+Calling this twice stops whatever was already running first -- otherwise
+SERVER would just be overwritten, leaking the previous server and every
+notebook worker process it owned.
 """
-function start_session(name::AbstractString; port::Union{Nothing,Int}=nothing)
-    nm = String(name)
-    haskey(SESSIONS, nm) && stop_session(nm)
+function start_session(; port::Union{Nothing,Int}=nothing)
+    SERVER[] === nothing || stop_session()
     port = something(port, _free_port())
     options = Pluto.Configuration.from_flat_kwargs(;
         port, launch_browser=false, require_secret_for_access=true,
         on_event = function (e)
-            e isa Pluto.StateChangeEvent && _note_change!(nm, e.notebook)
+            e isa Pluto.StateChangeEvent && _note_change!(e.notebook)
             nothing
         end,
     )
     session = Pluto.ServerSession(; options)
     server = Pluto.run!(session)
-    SESSIONS[nm] = (host="localhost:$port", secret=session.secret,
+    SERVER[] = (host="localhost:$port", secret=session.secret,
                     session=session, server=server,
                     # Every open notebook is already tracked by
                     # session.notebooks (Pluto's own Dict{UUID,Notebook}); this
-                    # is only which one a `session`-only tool call means.
+                    # is only which one a call that names no notebook means.
                     current=Ref{Union{Nothing,Base.UUID}}(nothing))
-    return SESSIONS[nm]
+    return SERVER[]
 end
 
 """
@@ -159,65 +158,52 @@ Also sweeps each notebook's spill directory: oversize output is written there
 so a payload can name a path instead of carrying megabytes, and the files are
 only meaningful while the session that produced them is alive.
 """
-function stop_session(name::AbstractString)
-    s = _session(name)
+function stop_session()
+    s = session()
     for nb in collect(values(s.session.notebooks))
         rm(spill_dir(nb); recursive=true, force=true)
         Pluto.SessionActions.shutdown(s.session, nb; async=false)
     end
     close(s.server)
-    delete!(SESSIONS, String(name))
-    # Keyed by (session, notebook_id), so this session's entries aren't one
-    # key -- drop everything whose first component matches.
-    nm = String(name)
-    for k in collect(keys(CHANGES))
-        first(k) == nm && delete!(CHANGES, k)
-    end
-    for k in collect(keys(SNAPSHOTS))
-        first(k) == nm && delete!(SNAPSHOTS, k)
-    end
-    for k in collect(keys(REPORTED))
-        first(k) == nm && delete!(REPORTED, k)
-    end
-    for k in collect(keys(CODE_SENT))
-        first(k) == nm && delete!(CODE_SENT, k)
-    end
+    SERVER[] = nothing
+    empty!(CHANGES); empty!(SNAPSHOTS); empty!(REPORTED); empty!(CODE_SENT)
     return nothing
 end
 
-function _session(name::AbstractString)
-    haskey(SESSIONS, String(name)) ||
-        error("no session \"$name\" — call start first")
-    return SESSIONS[String(name)]
+"The running server, or a clear refusal. Every tool resolves this first."
+function session()
+    SERVER[] === nothing && error("no server running — call start first")
+    return SERVER[]
 end
 
 """
-    _notebook(name; ref=nothing) -> Pluto.Notebook
+    _notebook(; ref=nothing) -> Pluto.Notebook
 
-Resolve which of the session's open notebooks a tool call means. Every
-notebook the session has open is already in `s.session.notebooks`
+Resolve which open notebook a tool call means. Every notebook that is open is
+already in `s.session.notebooks`
 (Pluto's own registry, keyed by notebook_id) -- `open`/`create` never
 replaced anything there, only our own single-notebook `Ref` did.
 
-`ref` is a notebook_id, a path (or an unambiguous suffix of one, so a
-basename is usually enough), or `nothing` for the session's CURRENT
-notebook -- the one the most recent `open`/`create` selected, matching the
-single-notebook behavior every other tool call defaults to.
+`ref` is a file name -- a path, or any unambiguous suffix of one, so the
+basename is usually enough -- or `nothing` for the CURRENT notebook, the one
+the most recent `open` selected.
+
+A file name, not an id: the notebook_id is Pluto's internal handle, it means
+nothing to a reader, and a notebook already has a name that everyone involved
+already uses.
 """
-function _notebook(name::AbstractString; ref::Union{Nothing,AbstractString}=nothing)
-    s = _session(name)
+function _notebook(; ref::Union{Nothing,AbstractString}=nothing)
+    s = session()
+    open_paths() = sort!([basename(nb.path) for nb in values(s.session.notebooks)])
     if ref === nothing
         id = s.current[]
-        id === nothing &&
-            error("session \"$name\" has no notebook — call open or create first")
+        id === nothing && error("no notebook open — call open first")
         return s.session.notebooks[id]
     end
-    id = tryparse(Base.UUID, ref)
-    id !== nothing && haskey(s.session.notebooks, id) && return s.session.notebooks[id]
     hits = [nb for nb in values(s.session.notebooks) if endswith(nb.path, ref)]
     length(hits) == 1 && return only(hits)
-    length(hits) > 1 && error("\"$ref\" matches $(length(hits)) open notebooks in session \"$name\"")
-    error("no open notebook matches \"$ref\" in session \"$name\" — see list")
+    length(hits) > 1 && error("\"$ref\" matches $(length(hits)) open notebooks: $(join(open_paths(), ", "))")
+    error("no open notebook matches \"$ref\" — open: $(join(open_paths(), ", "))")
 end
 
 notebook_url(s, nb) = "http://$(s.host)/edit?id=$(nb.notebook_id)&secret=$(s.secret)"
@@ -357,8 +343,8 @@ function cell_info(nb::Pluto.Notebook, c::Pluto.Cell, labels=cell_labels(nb);
 end
 
 #=
-(session, notebook) => cell_id => (fingerprint, reported_at) for the last
-version of that cell this SESSION was told about.
+notebook_id => cell_id => (fingerprint, reported_at) for the last version of
+that cell the client was told about.
 
 The reference point is the agent's context, not the notebook's history, and
 that is why the map is written only while building a record -- never from a
@@ -366,11 +352,11 @@ StateChangeEvent. A cell that changed and changed back between two records was
 never reported in between, so there is nothing for the agent to re-read: ABA is
 the right answer here, not a bug to defend against.
 =#
-const REPORTED = Dict{Tuple{String,Base.UUID},Dict{Base.UUID,Tuple{UInt64,Float64}}}()
+const REPORTED = Dict{Base.UUID,Dict{Base.UUID,Tuple{UInt64,Float64}}}()
 
 #=
-(session, notebook) => cell_id => hash of the cell's code, for code this
-SESSION already holds -- because a record delivered it, or because an `edit`
+notebook_id => cell_id => hash of the cell's code, for code the client
+already holds -- because a record delivered it, or because an `edit`
 supplied it in the first place.
 
 Kept apart from REPORTED because it answers a different question. REPORTED asks
@@ -384,26 +370,25 @@ and after a compact it no longer holds what this map claims -- so naming cells
 means send them whole, ledger or no ledger. An agent that still holds a cell
 has no reason to name it.
 =#
-const CODE_SENT = Dict{Tuple{String,Base.UUID},Dict{Base.UUID,UInt64}}()
+const CODE_SENT = Dict{Base.UUID,Dict{Base.UUID,UInt64}}()
 
 """
-    _mark_code_sent!(name, notebook_id, cell_id, code)
+    _mark_code_sent!(notebook_id, cell_id, code)
 
 Record `code` as text this session holds. `edit` calls it with the code it was
 handed: the caller wrote that text, so reading it back is the one field of the
 record they already have.
 """
-function _mark_code_sent!(name::AbstractString, notebook_id::Base.UUID, cell_id, code::AbstractString)
-    sent = get!(CODE_SENT, (String(name), notebook_id), Dict{Base.UUID,UInt64}())
+function _mark_code_sent!(notebook_id::Base.UUID, cell_id, code::AbstractString)
+    sent = get!(CODE_SENT, notebook_id, Dict{Base.UUID,UInt64}())
     sent[cell_id] = hash(code)
     return nothing
 end
 
 "Drop a cell from the reported map, so a deleted cell stops costing memory."
-function _forget_reported!(name::AbstractString, notebook_id::Base.UUID, cell_id)
-    key = (String(name), notebook_id)
-    haskey(REPORTED, key) && delete!(REPORTED[key], cell_id)
-    haskey(CODE_SENT, key) && delete!(CODE_SENT[key], cell_id)
+function _forget_reported!(notebook_id::Base.UUID, cell_id)
+    haskey(REPORTED, notebook_id) && delete!(REPORTED[notebook_id], cell_id)
+    haskey(CODE_SENT, notebook_id) && delete!(CODE_SENT[notebook_id], cell_id)
     return nothing
 end
 
@@ -438,7 +423,7 @@ function parse_timestamp(x::AbstractString)
 end
 
 """
-    record(name, nb, cells, finished, waited; since, changes, extra...) -> NamedTuple
+    record(nb, cells, finished, waited; since, changes, extra...) -> NamedTuple
 
 The one response shape: `status, waited_seconds, timestamp, cells`.
 
@@ -467,14 +452,13 @@ taken under `nb.executetoken`: that is Pluto's RUN lock, held for the whole
 reactive run, so waiting for it would make every `wait_seconds=0` call block
 until the run it was trying not to wait for had finished.
 """
-function record(name::AbstractString, nb::Pluto.Notebook, cells, finished::Bool, waited::Real;
+function record(nb::Pluto.Notebook, cells, finished::Bool, waited::Real;
                 since::Union{Nothing,Real,AbstractString}=nothing, full::Bool=false,
                 changes::Dict{String,<:NamedTuple}=Dict{String,NamedTuple}(), extra...)
     timestamp = time()
     labels = cell_labels(nb)
-    key = (String(name), nb.notebook_id)
-    seen = get!(REPORTED, key, Dict{Base.UUID,Tuple{UInt64,Float64}}())
-    sent = get!(CODE_SENT, key, Dict{Base.UUID,UInt64}())
+    seen = get!(REPORTED, nb.notebook_id, Dict{Base.UUID,Tuple{UInt64,Float64}}())
+    sent = get!(CODE_SENT, nb.notebook_id, Dict{Base.UUID,UInt64}())
     # `full` is a read that named its cells: nothing is compacted and nothing
     # is suppressed. The only reason to name a cell is not knowing, or not
     # remembering, what is in it -- and an agent that knows does not ask.
@@ -538,8 +522,8 @@ cells_info(nb::Pluto.Notebook) =
 # ------------------------------------------------------------------ writing --
 
 """Run `cells` synchronously: save the file, push patches to every browser, return when done."""
-function run_cells!(name::AbstractString, nb::Pluto.Notebook, cells::Vector{Pluto.Cell}; save::Bool=true)
-    s = _session(name)
+function run_cells!(nb::Pluto.Notebook, cells::Vector{Pluto.Cell}; save::Bool=true)
+    s = session()
     # Cheap when nothing restarted, and the only moment we are guaranteed to be
     # asked before a cell runs.
     ensure_renderer!(s.session, nb)
@@ -569,7 +553,7 @@ run_timestamps(nb::Pluto.Notebook) =
     Dict{Base.UUID,Float64}(c.cell_id => c.output.last_run_timestamp for c in nb.cells)
 
 """
-    run_with_deadline(name, nb, cells; wait_seconds=1.0) -> (finished, waited, touched)
+    run_with_deadline(nb, cells; wait_seconds=1.0) -> (finished, waited, touched)
 
 Start `cells` and wait up to `wait_seconds` for them to finish.
 
@@ -589,9 +573,9 @@ This is bounded by Pluto running a notebook's cells sequentially in one worker.
 An error cannot be reported before the cell producing it has had its turn, so a
 long-running cell ahead of it in the queue still has to finish first.
 """
-function run_with_deadline(name::AbstractString, nb::Pluto.Notebook, cells::Vector{Pluto.Cell};
+function run_with_deadline(nb::Pluto.Notebook, cells::Vector{Pluto.Cell};
                            wait_seconds::Real=1.0, save::Bool=true)
-    s = _session(name)
+    s = session()
     isempty(cells) && return (true, 0.0, Pluto.Cell[])
     # Every run funnels through here, which makes it the one place that can
     # notice the worker was replaced under us (see ensure_renderer!).

@@ -1,7 +1,7 @@
 #=
-The MCP surface: ten tools, one record, one vocabulary.
+The MCP surface: nine tools, one record, one vocabulary.
 
-Ten because every capability question has the same answer -- the agent writes a
+Nine because every capability question has the same answer -- the agent writes a
 cell. Probing a value, reading a docstring, computing a statistic, rendering a
 plot: all of these are cells, usually deleted on success. Tools exist only where
 cells cannot reach: lifecycle, the result record, raw bytes, and human-edit
@@ -49,9 +49,8 @@ end
 # fire-and-forget, for authoring a run of cells before reading any of them.
 const DEFAULT_WAIT = 0.1
 
-_sess(args) = get(args, "session", "default")
 _wait(args, default=DEFAULT_WAIT) = Float64(something(get(args, "wait_seconds", default), default))
-_nb(args) = _notebook(_sess(args); ref=get(args, "notebook", nothing))
+_nb(args) = _notebook(; ref=get(args, "notebook", nothing))
 
 """Resolve the `cells` argument, or the whole notebook when it is absent."""
 function _targets(args, nb, key="cells")
@@ -62,11 +61,8 @@ end
 
 const CELL_REF_DOC = "A cell NAME (a global it defines, e.g. \"throughput\"), a full UUID, or an unambiguous prefix of one."
 
-const SESSION_PARAM = ToolParameter(name="session", type="string",
-    description="Which session", required=false, default="default")
-
 const NOTEBOOK_PARAM = ToolParameter(name="notebook", type="string",
-    description="Which open notebook, if the session has more than one: a notebook_id or a path (a basename is usually enough). Omit for the current one. See list.",
+    description="Which open notebook, if more than one is open: its file name. Omit for the current one — the last one opened. See list.",
     required=false)
 
 wait_param(default=DEFAULT_WAIT) = ToolParameter(name="wait_seconds", type="number",
@@ -80,11 +76,10 @@ pluto_start = MCPTool(
     description="Start a Pluto server in this process and return its host and secret. The HTTP server exists only so a human can watch in a browser; every tool here calls Pluto directly. Follow with open.",
     parameters=[
         ToolParameter(name="port", type="number", description="Port for the browser UI; a free one is picked if omitted", required=false),
-        SESSION_PARAM,
     ],
     handler=(args -> @safely begin
-        s = start_session(_sess(args); port = haskey(args, "port") ? Int(args["port"]) : nothing)
-        _ok((session=_sess(args), host=s.host, secret=s.secret))
+        s = start_session(; port = haskey(args, "port") ? Int(args["port"]) : nothing)
+        _ok((host=s.host, secret=s.secret))
     end),
     return_type=TextContent,
 )
@@ -100,10 +95,9 @@ Pluto runs cells in DEPENDENCY order and allows one definition of a global per c
         ToolParameter(name="path", type="string", description="Path to the notebook .jl file. Omit only with create=true, for an anonymous scratch notebook.", required=false),
         ToolParameter(name="create", type="boolean", description="Create the notebook instead of opening an existing one (default false)", required=false, default=false),
         wait_param(),
-        SESSION_PARAM,
     ],
     handler=(args -> @safely begin
-        name = _sess(args); s = _session(name)
+        s = session()
         path = get(args, "path", nothing)
         create = get(args, "create", false)
         path === nothing && !create &&
@@ -120,12 +114,12 @@ Pluto runs cells in DEPENDENCY order and allows one definition of a global per c
             (already, wait_for_idle(already; wait_seconds=_wait(args))[1:2]...)
         s.current[] = nb.notebook_id
         for c in nb.cells
-            _mark_seen!(name, nb.notebook_id, c.cell_id, c.code)
+            _mark_seen!(nb.notebook_id, c.cell_id, c.code)
         end
         # ensure, not inject: reopening an already-open notebook (a hit above)
         # has a live, already-injected worker, and the identity check is free.
         ensure_renderer!(s.session, nb)
-        _ok(record(name, nb, nb.cells, finished, waited; url=notebook_url(s, nb), path=nb.path))
+        _ok(record(nb, nb.cells, finished, waited; url=notebook_url(s, nb), path=nb.path))
     end),
     return_type=TextContent,
 )
@@ -198,12 +192,11 @@ end
 
 pluto_list = MCPTool(
     name="list",
-    description="Every notebook this session has open, and which one is current. `open` never closes a previous notebook; other tools default to the current one.",
-    parameters=[SESSION_PARAM],
+    description="Every open notebook, and which one is current. `open` never closes a previous notebook; other tools default to the current one, and name a notebook by its file name.",
+    parameters=ToolParameter[],
     handler=(args -> @safely begin
-        s = _session(_sess(args)); current = s.current[]
-        _ok([(notebook_id=string(nb.notebook_id), path=nb.path, cells=length(nb.cells),
-              current = nb.notebook_id == current)
+        s = session(); current = s.current[]
+        _ok([(path=nb.path, cells=length(nb.cells), current = nb.notebook_id == current)
              for nb in values(s.session.notebooks)])
     end),
     return_type=TextContent,
@@ -219,24 +212,22 @@ No arguments: shut the whole session down — server, notebook workers, spill fi
     parameters=[
         NOTEBOOK_PARAM,
         ToolParameter(name="cell", type="string", description="With `notebook`: interrupt this cell's evaluation instead of shutting anything down. $CELL_REF_DOC", required=false),
-        SESSION_PARAM,
     ],
     handler=(args -> @safely begin
-        name = _sess(args)
         if get(args, "notebook", nothing) === nothing
             get(args, "cell", nothing) === nothing ||
                 error("stop with a cell also needs a notebook")
-            stop_session(name)
-            return _ok((stopped="session", session=name))
+            stop_session()
+            return _ok((stopped="server",))
         end
-        s = _session(name); nb = _nb(args)
+        s = session(); nb = _nb(args)
         ref = get(args, "cell", nothing)
         if ref === nothing
             rm(spill_dir(nb); recursive=true, force=true)
-            delete!(CHANGES, (name, nb.notebook_id))
-            delete!(SNAPSHOTS, (name, nb.notebook_id))
-            delete!(REPORTED, (name, nb.notebook_id))
-            delete!(CODE_SENT, (name, nb.notebook_id))
+            delete!(CHANGES, nb.notebook_id)
+            delete!(SNAPSHOTS, nb.notebook_id)
+            delete!(REPORTED, nb.notebook_id)
+            delete!(CODE_SENT, nb.notebook_id)
             path = nb.path
             s.current[] == nb.notebook_id && (s.current[] = nothing)
             Pluto.SessionActions.shutdown(s.session, nb; async=false)
@@ -256,7 +247,7 @@ No arguments: shut the whole session down — server, notebook workers, spill fi
         busy = busy_cells(nb)
         if isempty(busy)
             finished, waited, touched = wait_for_idle(nb; wait_seconds=0)
-            return _ok(record(name, nb, touched, finished, waited; stopped="cell",
+            return _ok(record(nb, touched, finished, waited; stopped="cell",
                               interrupted=nothing))
         end
         nb.wants_to_interrupt = true
@@ -264,7 +255,7 @@ No arguments: shut the whole session down — server, notebook workers, spill fi
         # stdout belongs to the JSON-RPC transport.
         Pluto.WorkspaceManager.interrupt_workspace((s.session, nb); verbose=false)
         finished, waited, touched = wait_for_idle(nb; wait_seconds=5.0)
-        _ok(record(name, nb, touched, finished, waited; stopped="cell",
+        _ok(record(nb, touched, finished, waited; stopped="cell",
                    interrupted=string(c.cell_id)))
     end),
     return_type=TextContent,
@@ -288,10 +279,9 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
         ToolParameter(name="delete_on_success", type="boolean", description="Delete the cell again if it reaches status=\"success\" before this call returns (default false; insert only)", required=false, default=false),
         wait_param(),
         NOTEBOOK_PARAM,
-        SESSION_PARAM,
     ],
     handler=(args -> @safely begin
-        name = _sess(args); s = _session(name); nb = _nb(args)
+        s = session(); nb = _nb(args)
         mode = get(args, "mode", "replace")
         code = String(something(get(args, "code", nothing), ""))
         ref = get(args, "cell", nothing)
@@ -305,12 +295,12 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
             # A label exists only while the cell does, and a UUID is not what
             # the agent called the cell -- so name it before removing it.
             gone = cell_labels(nb)[string(c.cell_id)]
-            _remove_cell!(name, nb, c)
+            _remove_cell!(nb, c)
             # Hand the removed cell to the run: the topology then sees it defines
             # nothing, so its globals are released and dependents re-run.
-            finished, waited, touched = run_with_deadline(name, nb, Pluto.Cell[c];
+            finished, waited, touched = run_with_deadline(nb, Pluto.Cell[c];
                                                           wait_seconds=_wait(args))
-            _ok(record(name, nb, filter(x -> x.cell_id != c.cell_id, touched), finished, waited;
+            _ok(record(nb, filter(x -> x.cell_id != c.cell_id, touched), finished, waited;
                        deleted=gone))
         elseif mode == "insert"
             c = new_cell(code)
@@ -320,22 +310,22 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
                 insert!(nb.cell_order, at + 1, c.cell_id)
                 nb.cells_dict[c.cell_id] = c
             end
-            _mark_seen!(name, nb.notebook_id, c.cell_id, code)
-            _mark_code_sent!(name, nb.notebook_id, c.cell_id, code)
+            _mark_seen!(nb.notebook_id, c.cell_id, code)
+            _mark_code_sent!(nb.notebook_id, c.cell_id, code)
             # save=!throwaway is an implementation detail, not the contract:
             # skipping the intermediate write keeps a probe out of the file in
             # the common case. What the agent is promised is the deletion below.
-            finished, waited, touched = run_with_deadline(name, nb, Pluto.Cell[c];
+            finished, waited, touched = run_with_deadline(nb, Pluto.Cell[c];
                                                           wait_seconds=_wait(args),
                                                           save=!throwaway)
-            r = record(name, nb, touched, finished, waited)
+            r = record(nb, touched, finished, waited)
             # Deleted iff the status is success at RETURN time -- that is the
             # whole contract, hence the name. An errored or still-calculating
             # cell stays: the agent has to see it to act on it, and a cell that
             # vanished mid-run is a worse surprise than one deleted on purpose.
             if throwaway && r.status == "success"
                 gone = cell_labels(nb)[string(c.cell_id)]
-                _remove_cell!(name, nb, c)
+                _remove_cell!(nb, c)
                 Pluto.update_save_run!(s.session, nb, Pluto.Cell[c]; run_async=false, save=false)
                 r = merge(r, (deleted=gone,))
             end
@@ -343,25 +333,25 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
         else
             c = resolve_cell(nb, String(ref))
             c.code = code
-            _mark_seen!(name, nb.notebook_id, c.cell_id, code)
-            _mark_code_sent!(name, nb.notebook_id, c.cell_id, code)
-            finished, waited, touched = run_with_deadline(name, nb, Pluto.Cell[c];
+            _mark_seen!(nb.notebook_id, c.cell_id, code)
+            _mark_code_sent!(nb.notebook_id, c.cell_id, code)
+            finished, waited, touched = run_with_deadline(nb, Pluto.Cell[c];
                                                           wait_seconds=_wait(args))
-            _ok(record(name, nb, touched, finished, waited))
+            _ok(record(nb, touched, finished, waited))
         end
     end),
     return_type=TextContent,
 )
 
 """Take a cell out of the notebook under the same lock the browser's edits use."""
-function _remove_cell!(name, nb, c)
+function _remove_cell!(nb, c)
     Pluto.withtoken(nb.executetoken) do
         i = findfirst(==(c.cell_id), nb.cell_order)
         i === nothing || deleteat!(nb.cell_order, i)
         delete!(nb.cells_dict, c.cell_id)
     end
-    _forget_seen!(name, nb.notebook_id, c.cell_id)
-    _forget_reported!(name, nb.notebook_id, c.cell_id)
+    _forget_seen!(nb.notebook_id, c.cell_id)
+    _forget_reported!(nb.notebook_id, c.cell_id)
     return nothing
 end
 
@@ -374,13 +364,12 @@ The backup path, not the normal one. `edit` already saves and runs, and a human'
         ToolParameter(name="cells", type="array", description="Cell references. $CELL_REF_DOC Omit to recompute everything.", required=false),
         wait_param(),
         NOTEBOOK_PARAM,
-        SESSION_PARAM,
     ],
     handler=(args -> @safely begin
-        name = _sess(args); nb = _nb(args)
-        finished, waited, touched = run_with_deadline(name, nb, _targets(args, nb);
+        nb = _nb(args)
+        finished, waited, touched = run_with_deadline(nb, _targets(args, nb);
                                                       wait_seconds=_wait(args))
-        _ok(record(name, nb, touched, finished, waited))
+        _ok(record(nb, touched, finished, waited))
     end),
     return_type=TextContent,
 )
@@ -393,10 +382,9 @@ pluto_bond = MCPTool(
         ToolParameter(name="value", type="string", description="New value, as the JSON TYPE the widget holds — a number for a slider (7, not \"7\"), true/false for a checkbox, a string only for a textual widget. Sent as given, with no coercion.", required=true),
         wait_param(),
         NOTEBOOK_PARAM,
-        SESSION_PARAM,
     ],
     handler=(args -> @safely begin
-        name = _sess(args); s = _session(name); nb = _nb(args)
+        s = session(); nb = _nb(args)
         sym = Symbol(String(args["name"]))
         # Not `haskey(nb.bonds, sym)`: a bond no browser has touched (the common
         # case headless) has no entry yet. is_assigned_anywhere is what Pluto's
@@ -418,7 +406,7 @@ pluto_bond = MCPTool(
             Pluto.set_bond_values_reactive(; session=s.session, notebook=nb,
                 bound_sym_names=Symbol[sym], run_async=false)
         end
-        _ok(record(name, nb, touched, finished, waited; bound=String(args["name"])))
+        _ok(record(nb, touched, finished, waited; bound=String(args["name"])))
     end),
     return_type=TextContent,
 )
@@ -436,16 +424,15 @@ The notebook object is read directly, so a human's browser edits are already in 
         wait_param(),
         ToolParameter(name="since", type="string", description="A `timestamp` from an earlier record, e.g. \"2026-08-23T18:42:23.788Z\": omit cells this session has already been shown unchanged, rather than listing them compactly. Copy the value, never compute it.", required=false),
         NOTEBOOK_PARAM,
-        SESSION_PARAM,
     ],
     handler=(args -> @safely begin
-        name = _sess(args); nb = _nb(args)
+        nb = _nb(args)
         finished, waited, _ = wait_for_idle(nb; wait_seconds=_wait(args))
         since = get(args, "since", nothing)
         labels = cell_labels(nb)
         targeted = haskey(args, "cells") && args["cells"] !== nothing
         cells = Vector{Any}(targeted ? _targets(args, nb) : copy(nb.cells))
-        changes = _human_edits(name, nb, since)
+        changes = _human_edits(nb, since)
         # A cell the human deleted has nothing left to describe, so its entry is
         # synthesised, because there is no Cell left to render it from. Never
         # onto a targeted read: a report asked for by name answers with those
@@ -461,7 +448,7 @@ The notebook object is read directly, so a human's browser edits are already in 
         end
         # Naming cells is asking to be told about them: they come back whole,
         # code included, however much of it this session was already sent.
-        r = record(name, nb, cells, finished, waited; since, changes, full=targeted)
+        r = record(nb, cells, finished, waited; since, changes, full=targeted)
         if get(args, "tree", false) == true
             # Keyed by name, because a compacted entry carries no cell_id and
             # the dependency graph is worth having either way -- it is a
@@ -480,8 +467,8 @@ a cell's entry. The only history the notebook itself does not hold: an edit made
 through these tools marks itself seen before running, so what is left in the log
 is genuinely somebody else's.
 """
-function _human_edits(name, nb, since)
-    log = get(CHANGES, (String(name), nb.notebook_id), NamedTuple[])
+function _human_edits(nb, since)
+    log = get(CHANGES, nb.notebook_id, NamedTuple[])
     cutoff = something(parse_timestamp(since), -Inf)
     edits = Dict{String,NamedTuple}()
     for e in log
@@ -510,7 +497,7 @@ function _tree_of(nb, c::Pluto.Cell, labels)
 end
 
 """
-    _from_worker(session_name, nb, c, call, extra...) -> Union{Nothing,Any}
+    _from_worker(nb, c, call, extra...) -> Union{Nothing,Any}
 
 Ask the notebook's worker for something about cell `c`'s VALUE.
 
@@ -523,9 +510,9 @@ notebook is busy (a read must not queue behind the run it was called to look
 at), or the worker could not produce what was asked for. The caller turns
 either into a message; neither is worth failing over.
 """
-function _from_worker(session_name, nb::Pluto.Notebook, c::Pluto.Cell, call::Symbol, extra...)
+function _from_worker(nb::Pluto.Notebook, c::Pluto.Cell, call::Symbol, extra...)
     isempty(busy_cells(nb)) || return nothing
-    s = _session(session_name)
+    s = session()
     ensure_renderer!(s.session, nb)
     try
         Pluto.WorkspaceManager.eval_fetch_in_workspace((s.session, nb),
@@ -541,23 +528,45 @@ const VIEWABLE = Set(["image/png", "image/jpeg", "image/gif", "image/webp"])
 
 pluto_output = MCPTool(
     name="output",
-    description="""One cell's value, shown as you ask for it — the same value, in whatever form Julia can render it.
+    description="""One cell's value — or the whole notebook — shown as you ask for it.
 
 `text/plain` is the value as Julia prints it, with nothing elided; the record only ever carries a summary. `image/png` is the picture, for a cell whose value is a figure. Ask a figure for `image/svg+xml` and you get the XML; `text/html`, `text/markdown`, `application/pdf` and anything else the value supports work the same way. Ask for something it cannot be and the answer lists what it can.
 
-`path` writes the result to that file instead of carrying it, whatever the size, and returns the path — that is how you save a figure or a table. With no `path`, the result comes back inline, spilling to a file only when it is too big to carry.""",
+Omit `cell` and the subject is the NOTEBOOK: `text/html` is the self-contained export, code and outputs embedded, viewable with no Pluto server; `text/plain` is the `.jl` source as it stands on disk.
+
+`path` writes the result to that file instead of carrying it, whatever the size, and returns the path — that is how you save a figure, a table, or the export. With no `path`, the result comes back inline, spilling to a file only when it is too big to carry.""",
     parameters=[
-        ToolParameter(name="cell", type="string", description=CELL_REF_DOC, required=true),
-        ToolParameter(name="mime", type="string", description="How to render it: \"text/plain\" for the value as text, \"image/png\" for a picture, or any MIME the value can show as (\"image/svg+xml\", \"text/html\", \"application/pdf\", …).", required=true),
+        ToolParameter(name="cell", type="string", description="$CELL_REF_DOC Omit for the notebook itself.", required=false),
+        ToolParameter(name="mime", type="string", description="How to render it: \"text/plain\" for the value as text (or the notebook's .jl source), \"image/png\" for a picture, \"text/html\" for a notebook's self-contained export, or any MIME the value can show as (\"image/svg+xml\", \"application/pdf\", …).", required=true),
         ToolParameter(name="path", type="string", description="Write the rendered result to this file and return the path, at any size. Omit to have it inline.", required=false),
         NOTEBOOK_PARAM,
-        SESSION_PARAM,
     ],
     handler=(args -> @safely begin
-        nb = _nb(args); c = resolve_cell(nb, String(args["cell"]))
-        label = cell_labels(nb)[string(c.cell_id)]
+        nb = _nb(args)
         want = String(args["mime"])
         dest = get(args, "path", nothing)
+        ref = get(args, "cell", nothing)
+
+        # No cell: the notebook is the subject, and it renders itself. Pluto
+        # owns both forms -- generate_html is what its own export button calls,
+        # save_notebook is the .jl file format -- so this is the same rule as
+        # everywhere else, one level up.
+        if ref === nothing
+            bytes = want == "text/html" ? Vector{UInt8}(Pluto.generate_html(nb)) :
+                    want == "text/plain" ? Vector{UInt8}(sprint(Pluto.save_notebook, nb)) :
+                    error("a notebook shows as \"text/html\" (self-contained export) or \"text/plain\" (its .jl source), not \"$want\"")
+            out = dest === nothing ? nothing : String(dest)
+            if out !== nothing
+                mkpath(dirname(abspath(out))); write(out, bytes)
+                return _ok((notebook=nb.path, mime=want, path=out, bytes=length(bytes)))
+            end
+            return _ok((notebook=nb.path, mime=want,
+                        output=truncate_payload(String(bytes); nb,
+                                                label=basename(nb.path), kind="notebook")))
+        end
+
+        c = resolve_cell(nb, String(ref))
+        label = cell_labels(nb)[string(c.cell_id)]
 
         # A cell that failed has no value to render: the error IS its result,
         # and the record already put it in structured form.
@@ -566,9 +575,9 @@ pluto_output = MCPTool(
                         error=truncate_payload(_error_text(c); nb, label, kind="error")))
         end
 
-        bytes = _from_worker(_sess(args), nb, c, :render, want)
+        bytes = _from_worker(nb, c, :render, want)
         if !(bytes isa Vector{UInt8}) || isempty(bytes)
-            can = _from_worker(_sess(args), nb, c, :offers)
+            can = _from_worker(nb, c, :offers)
             can isa Vector ||
                 error("could not render $label — the notebook is busy, or the cell has not run")
             return _ok((cell=label, mime=want, shows_as=can))
@@ -595,33 +604,15 @@ pluto_output = MCPTool(
     return_type=Content,
 )
 
-pluto_export = MCPTool(
-    name="export",
-    description="Export the notebook as one self-contained HTML file: code, outputs and a copy of the .jl source, viewable with no Pluto server. Commit the .jl and the .html together — that pair is the provenance record.",
-    parameters=[
-        ToolParameter(name="path", type="string", description="Output .html path (default: the notebook's path with .jl replaced by .html)", required=false),
-        NOTEBOOK_PARAM,
-        SESSION_PARAM,
-    ],
-    handler=(args -> @safely begin
-        name = _sess(args); nb = _nb(args)
-        out = get(args, "path", nothing)
-        out = out === nothing ? (splitext(nb.path)[1] * ".html") : String(out)
-        write(out, Pluto.generate_html(nb))
-        _ok(record(name, nb, nb.cells, true, 0.0; exported=out, bytes=filesize(out)))
-    end),
-    return_type=TextContent,
-)
-
 const ALL_TOOLS = [pluto_start, pluto_open, pluto_list, pluto_edit, pluto_run,
-                   pluto_read, pluto_output, pluto_bond, pluto_export, pluto_stop]
+                   pluto_read, pluto_output, pluto_bond, pluto_stop]
 
 const SERVER_DESCRIPTION = """
 Author and drive Pluto.jl notebooks: reactive, reproducible, self-contained with their own package environment. Pluto runs in-process and is called directly, so reads are always current and edits appear instantly to a human watching the browser.
 
 The loop: edit, then check `status`. `success`, proceed. `error`, read the cells and fix. `calculating`, call `read(wait_seconds=N, since=<timestamp from the record>)` — same record. Use `delete_on_success` for anything not worth keeping in the notebook: probes, docstrings, statistics, plots. Prefer `@info` with key-value pairs over `println`; structured entries survive truncation individually.
 
-Every response except `output`'s bytes, `start`'s host/secret and `list`'s paths is that one record: `status, waited_seconds, timestamp, cells`, where `status` is one of `pending | calculating | success | error` at both levels.
+Every response except `output`, `start`'s host/secret and `list`'s paths is that one record: `status, waited_seconds, timestamp, cells`, where `status` is one of `pending | calculating | success | error` at both levels.
 """
 
 function build_server()

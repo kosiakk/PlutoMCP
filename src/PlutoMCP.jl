@@ -25,7 +25,7 @@ include("render.jl")
 include("embedded.jl")
 include("tools.jl")
 
-export start_session, stop_session, notebook_source, cell_labels, resolve_cell,
+export start_session, stop_session, session, notebook_source, new_cell, cell_labels, resolve_cell,
     cell_info, cells_info, record, run_cells!, run_with_deadline, wait_for_idle,
     await_run, cascade, busy_cells, sketch, truncate_payload, spill_dir,
     build_server, run_server
