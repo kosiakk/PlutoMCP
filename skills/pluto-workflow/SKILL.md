@@ -200,8 +200,9 @@ block, a plot — works the same way: `output` addresses by `cell_id`.
 
 ## Also in the record
 
-- `read(tree=true)` gives each cell's `references` and its `upstream` /
-  `downstream` cells: what breaks if this changes.
+- `read(dependencies=true)` gives each cell's `upstream` and `downstream`
+  cells — one hop, keyed by the variable that connects them: what breaks if
+  this changes.
 - `read(since=<timestamp>)` reports what a **human** edited in the browser,
   with `old_code` beside the current `code`. That is the review channel; your
   own edits never appear there.

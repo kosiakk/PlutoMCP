@@ -219,7 +219,7 @@ end
     # speak; every one of them now has exactly one replacement.
     banned = ["block", "new_source", "source", "cell_id", "waited_s", "full",
               "edit_mode", "ephemeral", "finished", "errored", "session", "cell_type",
-              "mode", "after", "run"]
+              "mode", "after", "run", "tree"]
     for tool in P.ALL_TOOLS, p in tool.parameters
         @test !(p.name in banned)
     end
@@ -675,7 +675,7 @@ end
                       "wait_seconds" => 30))
 end
 
-@testset "read: snapshot, subset, tree" begin
+@testset "read: snapshot, subset, dependencies" begin
     r = call("read", Dict())
     @test is_record(r)
     @test r.status == "success"
@@ -698,7 +698,7 @@ end
     one = call("read", Dict("cells" => ["total"]))
     @test length(one.cells) == 1
 
-    t = call("read", Dict("cells" => ["total"], "tree" => true))
+    t = call("read", Dict("cells" => ["total"], "dependencies" => true))
     c = only(t.cells)
     @test "a" in c.upstream["a"]
     # `*` is a reference too, and correctly so: the tree is Pluto's own
@@ -706,7 +706,7 @@ end
     @test issubset(["a", "b"], c.references)
     @test !any(r -> startswith(r, "PlutoRunner"), c.references)
 
-    a = only(call("read", Dict("cells" => ["a"], "tree" => true)).cells)
+    a = only(call("read", Dict("cells" => ["a"], "dependencies" => true)).cells)
     @test "total" in a.downstream["a"]
 end
 

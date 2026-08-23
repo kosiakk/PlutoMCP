@@ -423,10 +423,10 @@ pluto_read = MCPTool(
     name="read",
     description="""The notebook as it is right now: the same record every other tool returns, running nothing.
 
-The notebook object is read directly, so a human's browser edits are already in it. `wait_seconds` waits for the run to go idle or for a new error. `since` (a `timestamp` from an earlier record) drops the cells you already have instead of compacting them. Naming `cells` returns those cells whole — `code` included, even if you were sent it before. That is the way back after a compact; a bare `read` omits code you already hold. Human edits arrive with `old_code` beside the new `code` — the review channel. `tree=true` adds the dependency graph.""",
+The notebook object is read directly, so a human's browser edits are already in it. `wait_seconds` waits for the run to go idle or for a new error. `since` (a `timestamp` from an earlier record) drops the cells you already have instead of compacting them. Naming `cells` returns those cells whole — `code` included, even if you were sent it before. That is the way back after a compact; a bare `read` omits code you already hold. Human edits arrive with `old_code` beside the new `code` — the review channel. `dependencies=true` adds, for each cell, which cells define what it reads and which read what it defines — one hop each way.""",
     parameters=[
         ToolParameter(name="cells", type="array", description="Cell references to report on. $CELL_REF_DOC Omit for all of them.", required=false),
-        ToolParameter(name="tree", type="boolean", description="Add each reported cell's references, and its upstream/downstream cells", required=false, default=false),
+        ToolParameter(name="dependencies", type="boolean", description="Add each reported cell's upstream and downstream cells — one hop, keyed by the variable that connects them", required=false, default=false),
         wait_param(),
         ToolParameter(name="since", type="string", description="A `timestamp` from an earlier record, e.g. \"2026-08-23T18:42:23.788Z\": omit cells this session has already been shown unchanged, rather than listing them compactly. Copy the value, never compute it.", required=false),
         NOTEBOOK_PARAM,
@@ -454,12 +454,13 @@ The notebook object is read directly, so a human's browser edits are already in 
         # Naming cells is asking to be told about them: they come back whole,
         # code included, however much of it this session was already sent.
         r = record(nb, cells, finished, waited; since, changes, full=targeted)
-        if get(args, "tree", false) == true
+        if get(args, "dependencies", false) == true
             # Keyed by name, because a compacted entry carries no cell_id and
             # the dependency graph is worth having either way -- it is a
             # property of the notebook, not of the cell's output.
-            trees = Dict(labels[string(c.cell_id)] => _tree_of(nb, c, labels) for c in nb.cells)
-            r = merge(r, (cells = [merge(e, get(trees, e.name, NamedTuple())) for e in r.cells],))
+            edges = Dict(labels[string(c.cell_id)] => _dependencies_of(nb, c, labels)
+                         for c in nb.cells)
+            r = merge(r, (cells = [merge(e, get(edges, e.name, NamedTuple())) for e in r.cells],))
         end
         _ok(r)
     end),
@@ -491,8 +492,15 @@ function _human_edits(nb, since)
     edits
 end
 
-"""One cell's place in Pluto's reactivity graph, by cell name."""
-function _tree_of(nb, c::Pluto.Cell, labels)
+"""
+One cell's neighbours in Pluto's reactivity graph, by cell name.
+
+One hop each way, not a tree: `upstream` is the cells that define what this
+one reads, `downstream` the cells that read what it defines, each keyed by the
+variable that connects them. Transitive closure is the caller's to walk if it
+wants one — and rarely what "what breaks if I change this" needs.
+"""
+function _dependencies_of(nb, c::Pluto.Cell, labels)
     # `topology.nodes` is an ImmutableDefaultDict: indexing an unanalysed cell
     # yields an empty node rather than throwing, and it has no 3-arg `get`.
     node = nb.topology.nodes[c]

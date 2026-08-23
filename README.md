@@ -127,13 +127,13 @@ bytes, and human-edit history.
 | `open` | get a notebook: open a `.jl` file, or `create=true` for a new one |
 | `edit` | insert / replace / delete a cell, save, and run it |
 | `run` | recompute cells whose non-reactive inputs changed (a file, an RNG) — the backup path; `edit` already saves and runs |
-| `read` | cells as they are now: snapshot, dependency tree, wait, changes-since |
+| `read` | cells as they are now: snapshot, dependencies, wait, changes-since |
 | `output` | one cell's value — or the whole notebook — as any MIME it renders: a picture, the full text, the HTML export |
 | `bond` | set an `@bind`-ed variable's value, like moving its widget |
 | `stop` | stop the session, one notebook, or one running cell |
 
 Probing a value and reading a docstring are cells (`edit` with
-`delete_on_success=true`); dependencies are `read(tree=true)`; waiting is
+`delete_on_success=true`); dependencies are `read(dependencies=true)`; waiting is
 `read(wait_seconds=N)`. A picture is `output(mime="image/png")` on the plotting
 cell: Pluto stores SVG, which no client can show, so the value is asked for a
 PNG instead — and for the same reason `output(mime="image/svg+xml")` hands back
