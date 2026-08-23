@@ -1,6 +1,6 @@
 name = "PlutoMCP"
 uuid = "335e2ae6-fbe9-4aef-8d3f-16b8e403ee9e"
-version = "0.3.0"
+version = "0.4.1"
 authors = ["Alexander Kosenkov <alexander@kosenkov.com>"]
 
 [deps]
