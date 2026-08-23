@@ -204,6 +204,12 @@ block, a plot — works the same way: `output` addresses by `cell_id`.
   cells it reads from and the cells that read it, one hop each way. Every name
   in them is a reference you can send back as `cell=`. That is what breaks if
   this changes.
+- **Reactivity is syntactic, so mutation is invisible to it.** Pluto builds the
+  graph from what a cell *assigns*, not from what it changes: `push!(v, x)`
+  reads `v`, so nothing downstream of `v` re-runs and nothing in
+  `dependencies` shows the link. A notebook that mutates looks reactive and is
+  not. Build the new value instead — `v2 = [v; x]` — and let the graph carry
+  it.
 - `read(since=<timestamp>)` reports what a **human** edited in the browser,
   with `old_code` beside the current `code`. That is the review channel; your
   own edits never appear there.
