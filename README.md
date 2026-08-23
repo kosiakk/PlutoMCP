@@ -78,15 +78,8 @@ places, which Pluto forbids by design.
 
 ## Setup
 
-Julia 1.10 or newer, and the package's own dependencies:
-
-```sh
-git clone https://github.com/kosiakk/PlutoMCP.git ~/Documents/PlutoMCP
-cd ~/Documents/PlutoMCP && julia --project=. -e 'import Pkg; Pkg.instantiate()'
-```
-
-Then, as a Claude Code plugin — the repo is its own single-plugin marketplace,
-so it is two commands:
+Julia 1.10 or newer. The repo is its own single-plugin marketplace, so the
+Claude Code plugin is two commands:
 
 ```sh
 claude plugin marketplace add kosiakk/PlutoMCP
@@ -96,12 +89,20 @@ claude plugin marketplace add kosiakk/PlutoMCP
 claude plugin install pluto@plutomcp
 ```
 
-Point the marketplace at your clone instead (`claude plugin marketplace add
-~/Documents/PlutoMCP`) if you want the installed plugin to track your working
-copy. Restart Claude Code afterwards; `claude plugin details pluto@plutomcp`
-should list two skills and one MCP server.
+There is nothing to instantiate by hand: the server installs its own Julia
+dependencies on first launch, which makes that first start take a few minutes.
+Restart Claude Code afterwards; `claude plugin details pluto@plutomcp` should
+list two skills and one MCP server.
 
-Or register just the server, with no plugin:
+Two alternatives. To have the installed plugin track a working copy, point the
+marketplace at a clone instead:
+
+```sh
+git clone https://github.com/kosiakk/PlutoMCP.git ~/Documents/PlutoMCP
+claude plugin marketplace add ~/Documents/PlutoMCP
+```
+
+Or clone anywhere and register just the server, with no plugin:
 
 ```sh
 claude mcp add pluto -- julia --project=$HOME/Documents/PlutoMCP $HOME/Documents/PlutoMCP/bin/pluto_mcp_server.jl
