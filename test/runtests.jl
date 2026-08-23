@@ -125,13 +125,14 @@ end
         "cells" => ["a = 6", "b = 7", "prod = a * b", "md\"# title\""],
         "cell_types" => ["code", "code", "code", "markdown"]))
     @test r.finished
-    @test length(r.cells) == 4
+    @test length(r.cells) == 5                 # the four requested + the wide-layout style cell
     @test occursin("/edit?id=", r.url)
     @test isfile(r.path)
+    @test occursin("max-width", r.cells[1].code)   # prepended automatically
 
     names = [c.name for c in call("read", Dict("session" => S))]
-    @test names[1:3] == ["a", "b", "prod"]
-    @test !P.is_name(names[4])                 # markdown keeps its UUID
+    @test names[2:4] == ["a", "b", "prod"]
+    @test !P.is_name(names[5])                 # markdown keeps its UUID
 
     @test call("output", Dict("session" => S, "cell_id" => "prod")).body == "42"
 end
