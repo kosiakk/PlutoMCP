@@ -493,7 +493,13 @@ Backed by `@doc` in the notebook's live workspace, so it sees whatever the noteb
     handler=(args -> @safely begin
         name = _sess(args); s = _session(name); nb = _nb(args)
         c = resolve_cell(nb, args["cell_id"])
-        refs = sort!(unique(String[string(r) for r in nb.topology.nodes[c].references]))
+        # A macro like @bind or html"..." pulls in references to Pluto's own
+        # runtime internals (PlutoRunner.Base.get, PlutoRunner.Core.applicable,
+        # ...) -- not something a notebook author ever meant to ask about, and
+        # confusing when one does resolve (to the real Base docs, under a
+        # PlutoRunner-qualified key that makes it look like Pluto's own).
+        refs = sort!(unique(String[string(r) for r in nb.topology.nodes[c].references
+                                    if !startswith(string(r), "PlutoRunner")]))
         docs = Dict{String,String}()
         for r in refs
             try

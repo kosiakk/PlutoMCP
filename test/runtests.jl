@@ -478,6 +478,12 @@ end
     @test isempty(r.errored)
     @test call("output", Dict("session" => S, "cell_id" => "doubled_bond")).body == "14"
 
+    # docs on an @bind cell must not surface Pluto's own runtime internals
+    # (PlutoRunner.Base.get and friends, pulled in by the @bind macro itself)
+    # as if they were things the notebook author referenced.
+    d = call("docs", Dict("session" => S, "cell_id" => "slider"))
+    @test !any(k -> startswith(String(k), "PlutoRunner"), keys(d.docs))
+
     call("bond", Dict("session" => S, "name" => "slider", "value" => 10))
     @test call("output", Dict("session" => S, "cell_id" => "doubled_bond")).body == "20"
 
