@@ -485,6 +485,26 @@ end
 
     call("edit", Dict("session" => S, "cell_id" => "doubled_bond", "edit_mode" => "delete"))
     call("edit", Dict("session" => S, "cell_id" => "slider", "edit_mode" => "delete"))
+
+    # The value is passed through exactly as given, with no type coercion --
+    # deliberately, not an oversight. Pluto's own transform_bond_value does no
+    # string->number parsing (a browser sends the JSON number 7, never the
+    # string "7"), and there is no way to tell "the number 7, sent as a
+    # string" apart from "the text '7', typed into a genuinely textual field"
+    # from the string alone -- guessing would silently corrupt whichever case
+    # it guessed wrong. Both a genuine string value and a numeric-looking
+    # string prove the pass-through: the second only works BECAUSE it stayed
+    # a string (Int * String would error).
+    call("edit", Dict("session" => S, "edit_mode" => "insert",
+                      "new_source" => "greeting = @bind greeting html\"<input type=text>\"", "block" => 60))
+    call("edit", Dict("session" => S, "edit_mode" => "insert",
+                      "new_source" => "shout = greeting * \"!\"", "block" => 60))
+    call("bond", Dict("session" => S, "name" => "greeting", "value" => "hello"))
+    @test call("output", Dict("session" => S, "cell_id" => "shout")).body == "\"hello!\""
+    call("bond", Dict("session" => S, "name" => "greeting", "value" => "7"))
+    @test call("output", Dict("session" => S, "cell_id" => "shout")).body == "\"7!\""
+    call("edit", Dict("session" => S, "cell_id" => "shout", "edit_mode" => "delete"))
+    call("edit", Dict("session" => S, "cell_id" => "greeting", "edit_mode" => "delete"))
 end
 
 @testset "png" begin

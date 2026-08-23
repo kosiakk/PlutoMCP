@@ -443,7 +443,7 @@ pluto_bond = MCPTool(
 Only for variables introduced with `@bind name widget`; use edit for anything else. Without this, an interactive notebook can't be explored -- every bound value would be stuck at whatever the widget's default was on load.""",
     parameters=[
         ToolParameter(name="name", type="string", description="The bound variable's name, as written in @bind name widget", required=true),
-        ToolParameter(name="value", type="string", description="New value for the binding (e.g. a slider's number, a checkbox's true/false)", required=true),
+        ToolParameter(name="value", type="string", description="New value for the binding, as the JSON TYPE the widget actually holds -- a real number for a slider (7, not \"7\"), a real true/false for a checkbox, a string only for a genuinely textual widget. Sent to the notebook exactly as given, with no type coercion: a stringified number would bind the variable to a String, not the number.", required=true),
         NOTEBOOK_PARAM,
         ToolParameter(name="session", type="string", description="Which session", required=false, default="default"),
     ],
@@ -455,6 +455,16 @@ Only for variables introduced with `@bind name widget`; use edit for anything el
         # is_assigned_anywhere is what set_bond_values_reactive itself checks.
         Pluto.MoreAnalysis.is_assigned_anywhere(nb.topology, sym) ||
             error("no @bind'ed variable named \"$(args["name"])\" -- see read for what's in this notebook")
+        # Pluto's own set_bond_value_pairs! runs the value through
+        # transform_bond_value -- the same step a browser's JS-typed
+        # websocket message goes through -- but does NO string->number
+        # parsing, because a browser never sends "7" for a slider, it sends
+        # the JSON number 7. Passed through as-is: guessing a numeric-looking
+        # STRING means the number 7 would be wrong exactly when it's a text
+        # field whose actual content is the digit "7" -- silently converting
+        # the string "7" to the number 7 breaks that case to fix a different
+        # one. The `value` parameter's description is the real fix: send the
+        # JSON type the widget actually wants.
         nb.bonds[sym] = Pluto.BondValue(args["value"])
         # NOT run_async=true: set_bond_values_reactive forwards kwargs straight
         # into its own run_reactive_async! call, silently overriding the
