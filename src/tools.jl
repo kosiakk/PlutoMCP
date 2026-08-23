@@ -227,6 +227,7 @@ No arguments: shut the whole session down — server, notebook workers, spill fi
             delete!(CHANGES, (name, nb.notebook_id))
             delete!(SNAPSHOTS, (name, nb.notebook_id))
             delete!(REPORTED, (name, nb.notebook_id))
+            delete!(CODE_SENT, (name, nb.notebook_id))
             path = nb.path
             s.current[] == nb.notebook_id && (s.current[] = nothing)
             Pluto.SessionActions.shutdown(s.session, nb; async=false)
@@ -314,6 +315,7 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
             at = ref === nothing ? length(nb.cell_order) :
                  findfirst(==(resolve_cell(nb, String(ref)).cell_id), nb.cell_order)
             Pluto.withtoken(nb.executetoken) do
+            _mark_code_sent!(name, nb.notebook_id, c.cell_id, code)
                 insert!(nb.cell_order, at + 1, c.cell_id)
                 nb.cells_dict[c.cell_id] = c
             end
@@ -338,6 +340,7 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
                 r = merge(r, (hint="status is \"$(r.status)\", so the cell was kept — delete it with edit(mode=\"delete\", cell=\"$(c.cell_id)\") once you have read it.",))
             end
             _ok(r)
+            _mark_code_sent!(name, nb.notebook_id, c.cell_id, code)
         else
             c = resolve_cell(nb, String(ref))
             c.code = code
@@ -426,7 +429,7 @@ pluto_read = MCPTool(
     name="read",
     description="""The notebook as it is right now: the same record every other tool returns, running nothing.
 
-The notebook object is read directly, so a human's browser edits are already in it. `wait_seconds` waits for the run to go idle or for a new error. `since` (a `timestamp` from an earlier record) drops the cells you already have instead of compacting them. Human edits arrive with `old_code`/`new_code` — the review channel. `tree=true` adds the dependency graph.""",
+The notebook object is read directly, so a human's browser edits are already in it. `wait_seconds` waits for the run to go idle or for a new error. `since` (a `timestamp` from an earlier record) drops the cells you already have instead of compacting them. Naming `cells` returns those cells whole — `code` included, even if you were sent it before. That is the way back after a compact; a bare `read` omits code you already hold. Human edits arrive with `old_code` beside the new `code` — the review channel. `tree=true` adds the dependency graph.""",
     parameters=[
         ToolParameter(name="cells", type="array", description="Cell references to report on. $CELL_REF_DOC Omit for all of them.", required=false),
         ToolParameter(name="tree", type="boolean", description="Add each reported cell's references, and its upstream/downstream cells", required=false, default=false),
@@ -440,18 +443,25 @@ The notebook object is read directly, so a human's browser edits are already in 
         finished, waited, _ = wait_for_idle(nb; wait_seconds=_wait(args))
         since = get(args, "since", nothing)
         labels = cell_labels(nb)
-        cells = Vector{Any}(haskey(args, "cells") && args["cells"] !== nothing ?
-                            _targets(args, nb) : copy(nb.cells))
+        targeted = haskey(args, "cells") && args["cells"] !== nothing
+        cells = Vector{Any}(targeted ? _targets(args, nb) : copy(nb.cells))
         changes = _human_edits(name, nb, since)
         # A cell the human deleted has nothing left to describe, so its entry is
-        # synthesised, because there is no Cell left to render it from.
+        # synthesised, because there is no Cell left to render it from. Never
+        # onto a targeted read: a report asked for by name answers with those
+        # cells, and a deletion elsewhere in the notebook is not one of them.
         live = Set(string(c.cell_id) for c in nb.cells)
         for (id, e) in changes
-            id in live || push!(cells, merge((name=id, cell_id=id, status="success",
-                                              code="", runtime_ns=nothing,
-                                              mime="text/plain", output=""), e))
+            # A deleted cell has no code left: `old_code` is what it was, and
+            # there is no `code` to report -- the entry says so by omission.
+            (targeted || id in live) ||
+                push!(cells, merge((name=id, cell_id=id, status="success",
+                                    runtime_ns=nothing,
+                                    mime="text/plain", output=""), e))
         end
-        r = record(name, nb, cells, finished, waited; since, changes)
+        # Naming cells is asking to be told about them: they come back whole,
+        # code included, however much of it this session was already sent.
+        r = record(name, nb, cells, finished, waited; since, changes, full=targeted)
         if get(args, "tree", false) == true
             # Keyed by name, because a compacted entry carries no cell_id and
             # the dependency graph is worth having either way -- it is a

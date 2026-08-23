@@ -109,10 +109,15 @@ Each cell entry carries `name` (the global it defines — that is also how you
 address it), `cell_id`, `status`, `code`, the rendered output, log entries, and
 an `error` message if it failed.
 
-The cell you just wrote comes back **without** `code` — you sent that text, so
-reading it back teaches you nothing. Everything else about it is there. A
-markdown cell is the exception, because Pluto stores it wrapped in `md"""` and
-that is not what you sent.
+`code` is only sent when you do not already have it. The cell you just wrote
+comes back without it — you supplied that text — and so does a cell that merely
+re-ran, because an execution cascade never rewrites code. Everything else is
+there: status, output, logs, errors.
+
+When you need the source back — after a compact, or for a cell you never
+wrote — name it: `read(cells=["total", "abl"])` answers with those cells whole,
+code included. Naming a cell IS asking to be told about it; a bare `read` stays
+compact.
 
 A cell you have already been shown, unchanged, comes back short:
 

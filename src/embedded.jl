@@ -176,6 +176,9 @@ function stop_session(name::AbstractString)
     for k in collect(keys(REPORTED))
         first(k) == nm && delete!(REPORTED, k)
     end
+    for k in collect(keys(CODE_SENT))
+        first(k) == nm && delete!(CODE_SENT, k)
+    end
     return nothing
 end
 
@@ -327,9 +330,12 @@ end
     cell_info(nb, c, labels; change=nothing) -> NamedTuple
 
 One cell's entry in the record: identity, `status`, `code`, rendered output,
-capped log entries, and an error message when it failed. `change` carries the
-`old_code`/`new_code` of a human's browser edit, which is the only thing a
-record ever says that the notebook itself does not.
+capped log entries, and an error message when it failed. `change` carries a
+human browser edit's `old_code` beside the new `code`, which is the only thing
+a record ever says that the notebook itself does not.
+
+`code` is dropped by `record` when this session already holds that exact text
+(see `CODE_SENT`), so an entry without it is not a cell without code.
 """
 function cell_info(nb::Pluto.Notebook, c::Pluto.Cell, labels=cell_labels(nb);
                    change::Union{Nothing,NamedTuple}=nothing)
@@ -359,10 +365,42 @@ wrapped in `md\"\"\"` on the way in, and a cell whose text is not what the calle
 sent is news, not an echo -- so the comparison, not the mode, decides.
 
 Everything else stays: status, output, error, logs, name and cell_id are the
+#=
+(session, notebook) => cell_id => hash of the cell's code, for code this
+SESSION already holds -- because a record delivered it, or because an `edit`
+supplied it in the first place.
+
+Kept apart from REPORTED because it answers a different question. REPORTED asks
+"is this whole entry the one I last sent?", which a re-run to a new output makes
+false; the code is unchanged all the same, and an execution cascade never
+rewrites code. So a cascade over a large notebook stops repeating source the
+agent is already holding, and an `edit` never reads its own text back to it.
+
+Recovery is `read(cells=[...])`. The agent's context is the reference point,
+and after a compact it no longer holds what this map claims -- so naming cells
+means send them whole, ledger or no ledger. An agent that still holds a cell
+has no reason to name it.
+=#
+const CODE_SENT = Dict{Tuple{String,Base.UUID},Dict{Base.UUID,UInt64}}()
+
+"""
+    _mark_code_sent!(name, notebook_id, cell_id, code)
+
+Record `code` as text this session holds. `edit` calls it with the code it was
+handed: the caller wrote that text, so reading it back is the one field of the
+record they already have.
+"""
+function _mark_code_sent!(name::AbstractString, notebook_id::Base.UUID, cell_id, code::AbstractString)
+    sent = get!(CODE_SENT, (String(name), notebook_id), Dict{Base.UUID,UInt64}())
+    sent[cell_id] = hash(code)
+    return nothing
+end
+
 answer the edit was asked for.
 """
 function drop_echoed_code(r::NamedTuple, c::Pluto.Cell, code::AbstractString)
     c.code == code || return r
+    haskey(CODE_SENT, key) && delete!(CODE_SENT[key], cell_id)
     id = string(c.cell_id)
     merge(r, (cells = Any[e isa NamedTuple && get(e, :cell_id, nothing) == id ?
                           Base.structdiff(e, NamedTuple{(:code,)}) : e
@@ -449,11 +487,17 @@ reactive run, so waiting for it would make every `wait_seconds=0` call block
 until the run it was trying not to wait for had finished.
 """
 function record(name::AbstractString, nb::Pluto.Notebook, cells, finished::Bool, waited::Real;
-                since::Union{Nothing,Real,AbstractString}=nothing,
+                since::Union{Nothing,Real,AbstractString}=nothing, full::Bool=false,
                 changes::Dict{String,<:NamedTuple}=Dict{String,NamedTuple}(), extra...)
     timestamp = time()
     labels = cell_labels(nb)
-    seen = get!(REPORTED, (String(name), nb.notebook_id), Dict{Base.UUID,Tuple{UInt64,Float64}}())
+    key = (String(name), nb.notebook_id)
+    seen = get!(REPORTED, key, Dict{Base.UUID,Tuple{UInt64,Float64}}())
+    sent = get!(CODE_SENT, key, Dict{Base.UUID,UInt64}())
+    # `full` is a read that named its cells: nothing is compacted and nothing
+    # is suppressed. The only reason to name a cell is not knowing, or not
+    # remembering, what is in it -- and an agent that knows does not ask.
+    holds_code(c) = !full && get(sent, c.cell_id, nothing) == hash(c.code)
 
     entries = Any[]
     statuses = String[]
@@ -467,14 +511,19 @@ function record(name::AbstractString, nb::Pluto.Notebook, cells, finished::Bool,
         push!(statuses, cell_status(c))
         fingerprint = cell_fingerprint(c)
         previous = get(seen, c.cell_id, nothing)
-        if previous !== nothing && first(previous) == fingerprint
+        if !full && previous !== nothing && first(previous) == fingerprint
             since === nothing && push!(entries, (name = labels[id],
                                                  status = cell_status(c),
                                                  unchanged_since = iso_timestamp(last(previous))))
             continue
         end
         seen[c.cell_id] = (fingerprint, timestamp)
-        push!(entries, cell_info(nb, c, labels; change = get(changes, id, nothing)))
+        info = cell_info(nb, c, labels; change = get(changes, id, nothing))
+        # Code the agent holds is dropped, not the entry: status, output, logs
+        # and any error are what the run was asked for.
+        holds_code(c) ? (info = Base.structdiff(info, NamedTuple{(:code,)})) :
+                        (sent[c.cell_id] = hash(c.code))
+        push!(entries, info)
     end
     merge((status = aggregate_status(statuses, finished),
            waited_seconds = round(Float64(waited); digits=2),

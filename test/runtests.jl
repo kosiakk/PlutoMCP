@@ -346,7 +346,8 @@ end
                       "code" => "total = a * b", "cell" => "b", "wait_seconds" => 60))
     @test cell_output(S, "total") == "42"
 
-    # markdown is wrapped for you
+    # markdown is wrapped for you -- and the wrapping is not read back, like
+    # any other code the caller just wrote. `code=true` is how you see it.
     m = call("edit", Dict("session" => S, "mode" => "insert",
                           "code" => "# a heading", "cell_type" => "markdown",
                           "wait_seconds" => 60))
@@ -373,7 +374,7 @@ end
     @test any(c -> c.name == "total" && c.output == "70", r.cells)
 end
 
-@testset "edit does not echo the code it was just given" begin
+@testset "code this session already holds is not sent again" begin
     # The caller wrote this text; sending it back is the one field of the
     # record they already have, and for a large cell it is the biggest.
     r = call("edit", Dict("session" => S, "mode" => "insert",
@@ -387,8 +388,8 @@ end
                            "code" => "echoed = 6 * 8", "wait_seconds" => 60))
     @test !haskey(only(c for c in r2.cells if c.name == "echoed"), :code)
 
-    # Markdown is wrapped in md""" on the way in, so the stored code is NOT
-    # what arrived -- that is news, not an echo, and it comes back.
+    # Markdown is wrapped in md\"\"\" on the way in. Still the caller's cell,
+    # still not read back -- the ledger keys on the STORED text.
     md = call("edit", Dict("session" => S, "mode" => "insert", "cell_type" => "markdown",
                            "code" => "a heading", "wait_seconds" => 60))
     entry_md = only(md.cells)
@@ -400,7 +401,18 @@ end
                       "code" => "downstream_of_echoed = echoed + 1", "wait_seconds" => 60))
     r3 = call("edit", Dict("session" => S, "cell" => "echoed",
                            "code" => "echoed = 6 * 9", "wait_seconds" => 60))
-    @test haskey(only(c for c in r3.cells if c.name == "downstream_of_echoed"), :code)
+    cascaded = only(c for c in r3.cells if c.name == "downstream_of_echoed")
+    @test !haskey(cascaded, :code)
+    @test cascaded.output == "55"
+
+    # Naming a cell is the way back after a compact: whole entry, code first.
+    # A bare read stays compact -- an agent that still holds the code has no
+    # reason to ask for it.
+    quiet = call("read", Dict("session" => S))
+    @test !any(c -> haskey(c, :code), quiet.cells)
+    one = call("read", Dict("session" => S, "cells" => ["downstream_of_echoed"]))
+    @test only(c.code for c in one.cells) == "downstream_of_echoed = echoed + 1"
+    @test only(c.output for c in one.cells) == "55"          # and all the details
 
     for n in ("downstream_of_echoed", "echoed", entry_md.name)
         call("edit", Dict("session" => S, "cell" => n, "mode" => "delete",
@@ -627,8 +639,10 @@ end
                       "wait_seconds" => 60))
     call("read", Dict("session" => T, "cells" => ["vals"]))
     call("run", Dict("session" => T, "cells" => ["vals"], "wait_seconds" => 60))
-    @test haskey(only(call("read", Dict("session" => T, "cells" => ["vals"])).cells),
-                 :unchanged_since)
+    # A bare read is where compaction shows: naming the cell asks to be told
+    # about it, and is answered in full.
+    bare = call("read", Dict("session" => T))
+    @test haskey(only(c for c in bare.cells if c.name == "vals"), :unchanged_since)
     call("stop", Dict("session" => T))
 end
 
@@ -666,6 +680,21 @@ end
     P.resolve_cell(nb, "a").code = "a = 12345"
     @test any(c -> get(c, :code, "") == "a = 12345",
               call("read", Dict("session" => S)).cells)
+
+    # A report asked for BY NAME answers with those cells. A human deleting
+    # some other cell is real news, but it is not what this call asked about --
+    # and a synthesised entry for it would land in every later targeted read.
+    call("edit", Dict("session" => S, "mode" => "insert",
+                      "code" => "doomed = 1", "wait_seconds" => 60))
+    nb2 = P._notebook(S)
+    doomed = P.resolve_cell(nb2, "doomed")
+    Pluto.withtoken(nb2.executetoken) do
+        deleteat!(nb2.cell_order, findfirst(==(doomed.cell_id), nb2.cell_order))
+        delete!(nb2.cells_dict, doomed.cell_id)
+    end
+    Pluto.update_save_run!(P._session(S).session, nb2, Pluto.Cell[doomed]; run_async=false)
+    named = call("read", Dict("session" => S, "cells" => ["a"]))
+    @test only(named.cells).name == "a"
     P.resolve_cell(nb, "a").code = "a = 6"
     call("run", Dict("session" => S, "cells" => ["a"], "wait_seconds" => 60))
 end

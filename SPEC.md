@@ -60,7 +60,9 @@ Every tool response except `output` bytes, `start` host/secret, and `list` paths
 `status, waited_seconds, timestamp, cells`. `timestamp` is ISO 8601 UTC with milliseconds (`"2026-08-23T18:42:23.788Z"`) — fixed width, so lexicographic order is chronological order; `since` takes it back, and still accepts a float unix time.
 `cells` lists every cell the reactive cascade touched, including clean downstream re-runs.
 
-An `edit`'s own cell omits `code`: the caller supplied that text, and echoing it back is the one field of the record they already hold. The comparison is byte-identical-to-what-arrived, so a markdown cell (stored wrapped in `md"""`) still reports its code, and every other cell in the cascade always does.
+`code` is sent only to a session that does not already hold it. One ledger per (session, notebook) records the hash of every cell's code as delivered — by a record that carried it, or by the `edit` that supplied it — and a cell whose hash matches omits the field. That covers an edit's own cell (the caller wrote the text) and the whole execution cascade (a re-run never rewrites code). No content comparison: markdown is wrapped in `md"""` on the way in and is still the caller's own cell.
+
+`read(cells=[...])` is the way back: naming cells asks to be told about them, so they come back whole — uncompacted, code included, ledger or not. The reference point is the agent's context, and after a compact it no longer holds what the ledger claims. A bare `read` stays compact, so polling pays nothing for code it already has.
 
 Cells this session already saw, unchanged, compress to `name, status, unchanged_since=<timestamp>`: at record build the server hashes each cell's full pre-truncation entry (code, status, rendered body, error, logs) and compares against the last hash reported to this session. Lazy, never on events: unreported intermediate states leave no trace, because the reference point is the agent's context, not notebook history.
 Unchanged certifies the rendered output; for sketched containers that is the summary, not the underlying data — value-level certainty is a probe cell (`hash(x)`).
