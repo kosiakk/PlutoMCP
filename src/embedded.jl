@@ -85,16 +85,16 @@ function _note_change!(name::String, nb::Pluto.Notebook)
         old = get(snap, c.cell_id, nothing)
         if old === nothing
             push!(log, (at=t, cell_id=string(c.cell_id), name=labels[string(c.cell_id)],
-                        kind="inserted", old_source="", new_source=c.code))
+                        change="inserted", old_code="", new_code=c.code))
         elseif old != c.code
             push!(log, (at=t, cell_id=string(c.cell_id), name=labels[string(c.cell_id)],
-                        kind="edited", old_source=old, new_source=c.code))
+                        change="edited", old_code=old, new_code=c.code))
         end
         snap[c.cell_id] = c.code
     end
     for id in setdiff(keys(snap), seen)
         push!(log, (at=t, cell_id=string(id), name=string(id),
-                    kind="deleted", old_source=snap[id], new_source=""))
+                    change="deleted", old_code=snap[id], new_code=""))
         delete!(snap, id)
     end
     length(log) > CHANGES_MAX && deleteat!(log, 1:(length(log) - CHANGES_MAX))
@@ -152,10 +152,15 @@ end
 Shut down every notebook this session has open -- each one owns a worker
 process -- THEN close the HTTP server. `close(server)` alone leaves those
 worker processes running with nothing left to stop them.
+
+Also sweeps each notebook's spill directory: oversize output is written there
+so a payload can name a path instead of carrying megabytes, and the files are
+only meaningful while the session that produced them is alive.
 """
 function stop_session(name::AbstractString)
     s = _session(name)
     for nb in collect(values(s.session.notebooks))
+        rm(spill_dir(nb); recursive=true, force=true)
         Pluto.SessionActions.shutdown(s.session, nb; async=false)
     end
     close(s.server)
@@ -285,22 +290,82 @@ end
 
 # ------------------------------------------------------------------ reading --
 
-"""Summarise one cell. The output body is described, not included -- see `cell_output`."""
-function cell_info(nb::Pluto.Notebook, c::Pluto.Cell, labels=cell_labels(nb))
-    body = c.output.body
-    n = body === nothing ? 0 :
-        body isa AbstractString ? sizeof(body) :
-        body isa Vector{UInt8}  ? length(body)  : -1
-    (name = labels[string(c.cell_id)],
-     cell_id = string(c.cell_id),
-     code = c.code,
-     mime = string(c.output.mime),
-     errored = c.errored,
-     running = c.running,
-     queued = c.queued,
-     runtime_ns = c.runtime,
-     output_bytes = n,
-     logs = c.logs)
+"""
+    cell_status(c) -> String
+
+One enum, `pending | calculating | success | error`, and the only progress
+vocabulary anywhere. A cell that has never run is `pending` just as a queued one
+is: from the agent's side both mean "no result yet", and a second word for the
+same fact is a second thing to reason about.
+"""
+function cell_status(c::Pluto.Cell)
+    c.errored && return "error"
+    c.running && return "calculating"
+    (c.queued || c.output.last_run_timestamp == 0) && return "pending"
+    "success"
+end
+
+"""
+    aggregate_status(statuses, finished) -> String
+
+The record's own `status`, by the single stated rule: any `error` means
+`error`, else any `pending`/`calculating` means `calculating`, else `success`.
+
+`finished` folds in the one thing the cells cannot say. An asynchronous run
+that has not yet touched its first cell leaves every cell looking settled, and
+calling that `success` would be a lie with a receipt.
+"""
+function aggregate_status(statuses, finished::Bool)
+    any(==("error"), statuses) && return "error"
+    (!finished || any(s -> s in ("pending", "calculating"), statuses)) && return "calculating"
+    "success"
+end
+
+"""
+    cell_info(nb, c, labels; change=nothing) -> NamedTuple
+
+One cell's entry in the record: identity, `status`, `code`, rendered output,
+capped log entries, and an error message when it failed. `change` carries the
+`old_code`/`new_code` of a human's browser edit, which is the only thing a
+record ever says that the notebook itself does not.
+"""
+function cell_info(nb::Pluto.Notebook, c::Pluto.Cell, labels=cell_labels(nb);
+                   change::Union{Nothing,NamedTuple}=nothing)
+    label = labels[string(c.cell_id)]
+    logs, dropped = render_logs(nb, c, label)
+    info = merge((name = label,
+                  cell_id = string(c.cell_id),
+                  status = cell_status(c),
+                  code = c.code,
+                  runtime_ns = c.runtime),
+                 render_output(nb, c, label))
+    isempty(logs) || (info = merge(info, (logs = logs,)))
+    dropped === nothing || (info = merge(info, (logs_dropped = dropped,)))
+    change === nothing || (info = merge(info, change))
+    return info
+end
+
+"""
+    record(nb, cells, finished, waited; extra...) -> NamedTuple
+
+The one response shape: `status, waited_seconds, timestamp, cells`.
+
+Every tool that runs, waits or reads returns this, so the agent parses one
+thing and reads one word for progress. `status` describes THIS operation --
+aggregated over the cells the record reports, not over the whole notebook --
+so an unrelated broken cell elsewhere cannot make every later edit look like a
+failure. A full `read` reports every cell, which is where notebook-wide state
+belongs. `timestamp` is the server clock and round-trips straight back into
+`read(since=...)`: the agent copies it, never computes it.
+"""
+function record(nb::Pluto.Notebook, cells, finished::Bool, waited::Real; extra...)
+    labels = cell_labels(nb)
+    entries = [c isa Pluto.Cell ? cell_info(nb, c, labels) : c for c in cells]
+    merge((status = aggregate_status([get(e, :status, "success") for e in entries], finished),
+           waited_seconds = round(Float64(waited); digits=2),
+           timestamp = time(),
+           cells = entries),
+          NamedTuple(extra))
 end
 
 cells_info(nb::Pluto.Notebook) =
@@ -316,9 +381,30 @@ function run_cells!(name::AbstractString, nb::Pluto.Notebook, cells::Vector{Plut
 end
 
 """
-    run_with_deadline(name, nb, cells; block=1.0) -> (finished::Bool, waited)
+    cascade(nb, before, targets) -> Vector{Pluto.Cell}
 
-Start `cells` and wait up to `block` seconds for them to finish.
+Every cell the reactive run touched, in notebook order.
+
+Reporting only the cells that were asked for describes the request, not the
+run: editing one definition can re-run a dozen cells downstream, and those
+clean re-runs are the part worth seeing. A cell counts as touched if its
+`last_run_timestamp` moved, if it is still running or queued, or if it was an
+explicit target (a cell whose edit changed nothing still ran).
+"""
+function cascade(nb::Pluto.Notebook, before::Dict{Base.UUID,Float64}, targets)
+    asked = Set(c.cell_id for c in targets)
+    [c for c in nb.cells
+     if c.cell_id in asked || c.running || c.queued ||
+        c.output.last_run_timestamp != get(before, c.cell_id, -1.0)]
+end
+
+run_timestamps(nb::Pluto.Notebook) =
+    Dict{Base.UUID,Float64}(c.cell_id => c.output.last_run_timestamp for c in nb.cells)
+
+"""
+    run_with_deadline(name, nb, cells; wait_seconds=1.0) -> (finished, waited, touched)
+
+Start `cells` and wait up to `wait_seconds` for them to finish.
 
 Most cells finish in milliseconds, and making a caller poll for a result that
 was already there is pure latency. A package load or a full-corpus plot can take
@@ -326,7 +412,8 @@ minutes, and blocking on that is worse. So: start, wait briefly, say which
 happened.
 
 `finished=false` is neither an error nor a timeout. The cells are still running,
-the browser already shows them running, and `status` reports when they are done.
+the browser already shows them running, and `read(wait_seconds=N)` reports when
+they are done.
 
 Returns as soon as a cell newly errors, rather than serving out the remaining
 deadline: the rest of a reactive run cannot un-break it. `finished` in that
@@ -337,30 +424,65 @@ An error cannot be reported before the cell producing it has had its turn, so a
 long-running cell ahead of it in the queue still has to finish first.
 """
 function run_with_deadline(name::AbstractString, nb::Pluto.Notebook, cells::Vector{Pluto.Cell};
-                           block::Real=1.0, save::Bool=true)
+                           wait_seconds::Real=1.0, save::Bool=true)
     s = _session(name)
-    isempty(cells) && return (true, 0.0)
-
-    errored_before = Set(c.cell_id for c in nb.cells if c.errored)
+    isempty(cells) && return (true, 0.0, Pluto.Cell[])
     # Pluto's own run_async=true does exactly this -- @async around the
     # synchronous path (see maybe_async in Run.jl) -- but doesn't hand back
     # the Task, so a caller is left guessing whether a run has finished from
     # cell state alone. Doing the @async ourselves makes istaskdone the literal
     # truth instead of a heuristic over `running`/`queued`/timestamps, which
     # could read "idle" in the instant before an async run had even started.
-    task = @async Pluto.update_save_run!(s.session, nb, cells; run_async=false, save)
+    await_run(nb, cells; wait_seconds) do
+        Pluto.update_save_run!(s.session, nb, cells; run_async=false, save)
+    end
+end
+
+"""
+    await_run(f, nb, targets; wait_seconds) -> (finished, waited, touched)
+
+Run `f` -- anything that drives Pluto's reactive engine -- on a task, and wait
+`wait_seconds` for it. One place decides what `finished` means, so `run`,
+`edit` and `bond` cannot drift apart on it.
+"""
+function await_run(f, nb::Pluto.Notebook, targets; wait_seconds::Real=1.0)
+    before = run_timestamps(nb)
     # Only NEW errors are worth stopping for; a notebook can already contain an
     # unrelated broken cell, and that is not news about this run.
+    errored_before = Set(c.cell_id for c in nb.cells if c.errored)
     new_error() = any(c -> c.errored && !(c.cell_id in errored_before), nb.cells)
 
+    task = @async f()
     t0 = time()
-    while !istaskdone(task) && time() - t0 < block
+    while !istaskdone(task) && time() - t0 < wait_seconds
         # Surface a failure the moment it happens rather than serving out the
         # deadline: the rest of a reactive run cannot un-break it.
-        new_error() && return (istaskdone(task), time() - t0)
+        new_error() && break
         sleep(0.02)
     end
-    return (istaskdone(task), time() - t0)
+    # A task that finished by throwing must not be reported as a clean finish:
+    # fetch re-raises it into the tool handler, which turns it into an error
+    # result the agent can read.
+    istaskdone(task) && istaskfailed(task) && fetch(task)
+    (istaskdone(task), time() - t0, cascade(nb, before, targets))
+end
+
+"""
+    wait_for_idle(nb; wait_seconds) -> (finished, waited, touched)
+
+Wait for a notebook already running to go idle, or for a NEW error, whichever
+comes first. `read(wait_seconds=N)` is this and nothing else -- the same
+early-return rule as `run_with_deadline`, over a run somebody else started.
+"""
+function wait_for_idle(nb::Pluto.Notebook; wait_seconds::Real=0.0)
+    before = run_timestamps(nb)
+    errored_before = Set(c.cell_id for c in nb.cells if c.errored)
+    new_error() = any(c -> c.errored && !(c.cell_id in errored_before), nb.cells)
+    t0 = time()
+    while !isempty(busy_cells(nb)) && time() - t0 < wait_seconds && !new_error()
+        sleep(0.02)
+    end
+    (isempty(busy_cells(nb)), time() - t0, cascade(nb, before, Pluto.Cell[]))
 end
 
 """Cells currently running or queued, anywhere in the notebook."""
