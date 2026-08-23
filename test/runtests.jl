@@ -167,6 +167,26 @@ end
     call("stop", Dict("session" => T))
 end
 
+@testset "stop cleans up CHANGES/SNAPSHOTS for every notebook in the session" begin
+    # These are keyed by (session, notebook_id) since the multi-notebook fix,
+    # so cleanup can no longer be a single delete!(dict, session_name) --
+    # confirm it still removes every entry for a session with several
+    # notebooks open, not just the current one.
+    T = "cleanup-multi-notebook-test"
+    call("start", Dict("session" => T))
+    call("create", Dict("session" => T, "block" => 60, "cells" => ["p = 1"]))
+    other = P.notebook_source(["q = 2"])
+    other.path = tempname() * ".jl"
+    Pluto.save_notebook(other)
+    call("open", Dict("session" => T, "path" => other.path, "block" => 60))
+    @test count(k -> first(k) == T, keys(P.CHANGES)) == 2
+    @test count(k -> first(k) == T, keys(P.SNAPSHOTS)) == 2
+
+    call("stop", Dict("session" => T))
+    @test !any(k -> first(k) == T, keys(P.CHANGES))
+    @test !any(k -> first(k) == T, keys(P.SNAPSHOTS))
+end
+
 @testset "create and read" begin
     r = call("create", Dict("session" => S, "block" => 60,
         "cells" => ["a = 6", "b = 7", "prod = a * b", "md\"# title\""],
