@@ -1,0 +1,20 @@
+{
+  "name": "pluto",
+  "description": "Author and run Julia Pluto notebooks while a human reviews them live in the browser. Reactive, reproducible, self-contained with their package environment.",
+  "version": "0.4.0",
+  "author": {
+    "name": "Alexander Kosenkov"
+  },
+  "homepage": "https://github.com/kosiakk/PlutoMCP",
+  "license": "MIT",
+  "keywords": ["julia", "pluto", "notebook", "reproducibility", "data-analysis"],
+  "mcpServers": {
+    "pluto": {
+      "command": "julia",
+      "args": [
+        "--project=${CLAUDE_PLUGIN_ROOT}",
+        "${CLAUDE_PLUGIN_ROOT}/bin/pluto_mcp_server.jl"
+      ]
+    }
+  }
+}
