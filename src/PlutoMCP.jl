@@ -24,7 +24,6 @@ include("tools.jl")
 
 export start_session, stop_session, notebook_source, cell_labels, resolve_cell,
     cell_info, cells_info, run_cells!, run_with_deadline, busy_cells,
-    take_questions!, ASSISTANT_NAME,
     build_server, run_server
 
 end # module PlutoMCP

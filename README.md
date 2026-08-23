@@ -99,10 +99,9 @@ claude mcp add pluto -- julia --project=$HOME/Documents/PlutoMCP \
 | `read` | list cells as they are now; runs nothing |
 | `edit` | replace / insert / delete a cell, then run it |
 | `run` | run cells |
-| `status` | what is still running, and what changed since you last looked |
+| `status` | what is still running, and which cells a human changed since you last looked |
 | `output` | one cell's output |
 | `png` | render a plotting cell as an image |
-| `questions` | what the user asked from the notebook UI |
 | `stop` | shut the server down |
 
 `edit` follows `NotebookEdit`'s vocabulary: `cell_id`, `new_source`,
@@ -138,21 +137,17 @@ That is neither an error nor a timeout. The cell is still going, the browser
 already shows it running, and `status` waits for it and says when it
 is done.
 
-## The user can ask you something
+## The two channels
 
-Pluto's "Ask AI" panel normally assembles context for a cell and asks you to
-copy it into a chat elsewhere. With a [patched
-Pluto](https://github.com/kosiakk/Pluto.jl/tree/assistant-direct-message), this
-session registers itself instead, the button becomes **Ask Claude**, and the
-question arrives here — along with the cell, its code, its output and what it
-depends on.
+There are exactly two channels between you and the human: terminal text, and
+notebook edits in either direction. `status` is the second channel's read
+side — it reports which cells a human changed since you last looked, with old
+and new source, so you can answer by editing back.
 
-The `questions` tool returns them, once each. `status` reports how many are
-waiting, so a poll you were already making surfaces them. Answer by editing the
-notebook, which is the entire point of being attached to it.
-
-On stock Pluto the registration is skipped and the panel behaves as it always
-has.
+A prior version of this tool added a third channel — an in-notebook "ask AI"
+inbox — behind a fork of Pluto. That fork is not something anyone can install,
+so it was dropped: the terminal already carries text, and a feature that needs
+a fork is a feature nobody has.
 
 ## Concurrent editing is the point
 

@@ -228,15 +228,31 @@ end
     @test isempty(call("status", Dict("session" => S)).errored)
 end
 
-@testset "status reports change activity" begin
+@testset "status reports a real diff" begin
     s1 = call("status", Dict("session" => S))
     @test s1.idle
-    @test s1.changes > 0                        # the edits above were recorded
 
+    # An edit made THROUGH our own tools is pre-marked as seen (see
+    # `_mark_seen!`), so it must not reappear as a "change" -- status exists to
+    # report what a HUMAN did, not to echo the agent's own actions back to it.
     call("edit", Dict("session" => S, "cell_id" => "a",
                       "new_source" => "a = 5", "block" => 60))
     s2 = call("status", Dict("session" => S, "since" => s1.now))
-    @test s2.changes > 0                        # counted only since s1
+    @test isempty(s2.changes)
+
+    # A change made OUTSIDE our own tools -- exactly what a browser patch does
+    # -- is not pre-marked, so the event hook reports it with old and new source.
+    nb = P._notebook(S)
+    cell = P.resolve_cell(nb, "a")
+    cell.code = "a = 9"
+    Pluto.update_save_run!(P._session(S).session, nb, Pluto.Cell[cell]; run_async=false)
+    s3 = call("status", Dict("session" => S, "since" => s2.now))
+    @test length(s3.changes) == 1
+    ch = s3.changes[1]
+    @test ch.name == "a"
+    @test ch.kind == "edited"
+    @test ch.old_source == "a = 5"
+    @test ch.new_source == "a = 9"
 end
 
 @testset "reads reflect the live notebook" begin
@@ -285,35 +301,6 @@ end
     r = call("open", Dict("session" => S, "path" => path))
     @test length(r.cells) == 2
     @test call("output", Dict("session" => S, "cell_id" => "doubled")).body == "42"
-end
-
-@testset "questions from the notebook UI" begin
-    # The inbox is what Pluto's "Ask AI" panel delivers into when this session is
-    # attached as the assistant. That hook exists only in a Pluto that has it;
-    # the buffer itself is testable either way.
-    @test call("questions", Dict("session" => S)).count == 0
-
-    P._note_question!(S, (cell_id = "c1", question = "why?", context = "<ctx/>", at = time()))
-    P._note_question!(S, (cell_id = "c2", question = "and this?", context = "", at = time()))
-
-    @test call("status", Dict("session" => S)).questions_waiting == 2
-
-    q = call("questions", Dict("session" => S))
-    @test q.count == 2
-    @test q.questions[1].question == "why?"
-    @test q.questions[2].cell_id == "c2"
-
-    # Handed over once, then cleared: a question read twice is answered twice.
-    @test call("questions", Dict("session" => S)).count == 0
-    @test call("status", Dict("session" => S)).questions_waiting == 0
-
-    # Oldest are dropped rather than allowed to grow without bound.
-    for i in 1:(P.INBOX_MAX + 10)
-        P._note_question!(S, (cell_id = "c", question = "q$i", context = "", at = time()))
-    end
-    kept = call("questions", Dict("session" => S))
-    @test kept.count == P.INBOX_MAX
-    @test kept.questions[end].question == "q$(P.INBOX_MAX + 10)"
 end
 
 @testset "stop" begin

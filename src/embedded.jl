@@ -24,42 +24,70 @@ attached.
 # session name => the server, the Pluto session, and the notebook it is driving
 const SESSIONS = Dict{String,Any}()
 
-# session name => timestamps of recent StateChangeEvents. A DROPPING buffer:
-# a notification path must never be able to block the thing it observes.
-const CHANGES = Dict{String,Vector{Float64}}()
+# session name => log of cell-level edits seen via StateChangeEvent, oldest
+# first. A DROPPING buffer: a notification path must never be able to block
+# the thing it observes.
+const CHANGES = Dict{String,Vector{NamedTuple}}()
 const CHANGES_MAX = 256
 
-"What the notebook UI calls the attached assistant on its button."
-const ASSISTANT_NAME = Ref("Claude")
+# session name => cell_id => code, as of the last StateChangeEvent. Lets the
+# event hook tell an edit apart from a mere state transition (queued/running),
+# and reconstructs old/new source for the diff `status` reports.
+const SNAPSHOTS = Dict{String,Dict{Base.UUID,String}}()
 
-# Questions a human asked from the notebook UI, newest last. Also a DROPPING
-# buffer: an inbox that can block is a way to hang the notebook from the UI.
-const INBOX = Dict{String,Vector{Any}}()
-const INBOX_MAX = 64
+"""
+    _mark_seen!(name, cell_id, code)
 
-function _note_question!(name::String, q)
-    v = get!(INBOX, name, Any[])
-    push!(v, (cell_id = q.cell_id, question = q.question, context = q.context, at = q.at))
-    length(v) > INBOX_MAX && deleteat!(v, 1:(length(v) - INBOX_MAX))
+Record `code` as already-known for `cell_id` before running it, so the
+StateChangeEvent that follows does not report our own edit back to us as a
+change. `status` exists to tell the agent what a HUMAN did while it was not
+looking; an edit the agent just made through these tools is not that.
+"""
+function _mark_seen!(name::AbstractString, cell_id, code::AbstractString)
+    snap = get!(SNAPSHOTS, String(name), Dict{Base.UUID,String}())
+    snap[cell_id] = code
+    return nothing
+end
+
+"Drop a cell from the snapshot, so its removal is not reported as a deletion."
+function _forget_seen!(name::AbstractString, cell_id)
+    haskey(SNAPSHOTS, String(name)) && delete!(SNAPSHOTS[String(name)], cell_id)
     return nothing
 end
 
 """
-    take_questions!(name) -> Vector
+    _note_change!(name, nb)
 
-Everything asked since the last call, removed from the inbox as it is handed
-over: a question read twice is a question answered twice.
+Diff `nb` against the last-seen snapshot for this session and append one entry
+per inserted, edited or deleted cell to `CHANGES`. Runs on every
+`StateChangeEvent`. A tool-initiated edit already updated the snapshot via
+`_mark_seen!` before running, so it diffs to nothing here -- what is left is
+what a human changed in the browser while nobody was looking.
 """
-function take_questions!(name::AbstractString)
-    v = get(INBOX, String(name), Any[])
-    out = copy(v); empty!(v)
-    return out
-end
-
-function _note_change!(name::String)
-    v = get!(CHANGES, name, Float64[])
-    push!(v, time())
-    length(v) > CHANGES_MAX && deleteat!(v, 1:(length(v) - CHANGES_MAX))
+function _note_change!(name::String, nb::Pluto.Notebook)
+    t = time()
+    snap = get!(SNAPSHOTS, name, Dict{Base.UUID,String}())
+    log = get!(CHANGES, name, NamedTuple[])
+    labels = cell_labels(nb)
+    seen = Set{Base.UUID}()
+    for c in nb.cells
+        push!(seen, c.cell_id)
+        old = get(snap, c.cell_id, nothing)
+        if old === nothing
+            push!(log, (at=t, cell_id=string(c.cell_id), name=labels[string(c.cell_id)],
+                        kind="inserted", old_source="", new_source=c.code))
+        elseif old != c.code
+            push!(log, (at=t, cell_id=string(c.cell_id), name=labels[string(c.cell_id)],
+                        kind="edited", old_source=old, new_source=c.code))
+        end
+        snap[c.cell_id] = c.code
+    end
+    for id in setdiff(keys(snap), seen)
+        push!(log, (at=t, cell_id=string(id), name=string(id),
+                    kind="deleted", old_source=snap[id], new_source=""))
+        delete!(snap, id)
+    end
+    length(log) > CHANGES_MAX && deleteat!(log, 1:(length(log) - CHANGES_MAX))
     return nothing
 end
 
@@ -90,7 +118,7 @@ function start_session(name::AbstractString; port::Union{Nothing,Int}=nothing)
     options = Pluto.Configuration.from_flat_kwargs(;
         port, launch_browser=false, require_secret_for_access=true,
         on_event = function (e)
-            e isa Pluto.StateChangeEvent && _note_change!(nm)
+            e isa Pluto.StateChangeEvent && _note_change!(nm, e.notebook)
             nothing
         end,
     )
@@ -98,14 +126,6 @@ function start_session(name::AbstractString; port::Union{Nothing,Int}=nothing)
     server = Pluto.run!(session)
     SESSIONS[nm] = (host="localhost:$port", secret=session.secret,
                     session=session, server=server, notebook=Ref{Any}(nothing))
-
-    # Announce ourselves to the notebook UI, where Pluto supports it. The "Ask
-    # AI" panel then sends questions straight here instead of producing text for
-    # someone to paste into a chat elsewhere. Guarded, because stock Pluto has
-    # no such hook and must keep working.
-    if isdefined(Pluto, :attach_assistant!)
-        Pluto.attach_assistant!(q -> _note_question!(nm, q); name=ASSISTANT_NAME[])
-    end
     return SESSIONS[nm]
 end
 
@@ -114,8 +134,7 @@ function stop_session(name::AbstractString)
     close(s.server)
     delete!(SESSIONS, String(name))
     delete!(CHANGES, String(name))
-    delete!(INBOX, String(name))
-    isdefined(Pluto, :detach_assistant!) && Pluto.detach_assistant!()
+    delete!(SNAPSHOTS, String(name))
     return nothing
 end
 

@@ -71,9 +71,12 @@ pluto_open = MCPTool(
         ToolParameter(name="session", type="string", description="Which session", required=false, default="default"),
     ],
     handler=(args -> @safely begin
-        s = _session(_sess(args))
+        name = _sess(args); s = _session(name)
         nb = Pluto.SessionActions.open(s.session, args["path"]; run_async = !get(args, "run", true))
         s.notebook[] = nb
+        for c in nb.cells
+            _mark_seen!(name, c.cell_id, c.code)
+        end
         _ok((url=notebook_url(s, nb), path=nb.path, cells=cells_info(nb)))
     end),
     return_type=TextContent,
@@ -102,6 +105,9 @@ Dependencies install themselves: just write `using Plots` in a cell. Pluto insta
         path = Pluto.SessionActions.save_upload(src; filename_base=get(args, "filename", nothing))
         nb = Pluto.SessionActions.open(s.session, path; run_async=true)
         s.notebook[] = nb
+        for c in nb.cells
+            _mark_seen!(name, c.cell_id, c.code)
+        end
         t0 = time()
         while any(c -> c.running || c.queued, nb.cells) && time() - t0 < _block(args)
             sleep(0.02)
@@ -149,8 +155,13 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
 
         if mode == "delete"
             c = resolve_cell(nb, ref)
-            deleteat!(nb.cell_order, findfirst(==(c.cell_id), nb.cell_order))
-            delete!(nb.cells_dict, c.cell_id)
+            # Same lock the browser's own edits run under: a patch landing on
+            # cell_order/cells_dict mid-mutation is exactly the race this guards.
+            Pluto.withtoken(nb.executetoken) do
+                deleteat!(nb.cell_order, findfirst(==(c.cell_id), nb.cell_order))
+                delete!(nb.cells_dict, c.cell_id)
+            end
+            _forget_seen!(name, c.cell_id)
             # Hand the removed cell to the run: the topology then sees it defines
             # nothing, so its globals are released and dependents re-run.
             Pluto.update_save_run!(s.session, nb, Pluto.Cell[c]; run_async=false)
@@ -158,13 +169,17 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
         elseif mode == "insert"
             c = Pluto.Cell(code)
             at = ref === nothing ? 0 : findfirst(==(resolve_cell(nb, ref).cell_id), nb.cell_order)
-            insert!(nb.cell_order, at + 1, c.cell_id)
-            nb.cells_dict[c.cell_id] = c
+            Pluto.withtoken(nb.executetoken) do
+                insert!(nb.cell_order, at + 1, c.cell_id)
+                nb.cells_dict[c.cell_id] = c
+            end
+            _mark_seen!(name, c.cell_id, code)
             finished, waited = run_with_deadline(name, Pluto.Cell[c]; block=_block(args))
             _ok(_run_result(nb, [c], finished, waited))
         else
             c = resolve_cell(nb, ref)
             c.code = code
+            _mark_seen!(name, c.cell_id, code)
             finished, waited = run_with_deadline(name, Pluto.Cell[c]; block=_block(args))
             _ok(_run_result(nb, [c], finished, waited))
         end
@@ -194,13 +209,13 @@ Waits up to `block` seconds. Most cells finish well inside that and come back co
 
 pluto_status = MCPTool(
     name="status",
-    description="""Is anything still running, and what has changed since you last looked?
+    description="""Is anything still running, and which cells changed since you last looked?
 
-Covers changes made by a HUMAN in the browser as well as your own: it is backed by Pluto's StateChangeEvent hook, so it costs no polling. Pass the previous result's `now` back as `since` to count only what happened in between.
+Covers changes made by a HUMAN in the browser as well as your own: it is backed by Pluto's StateChangeEvent hook, so it costs no polling. Each change reports the cell's name, whether it was inserted, edited or deleted, and (for edited cells) the old and new source — enough to answer by editing back, not just a count. Pass the previous result's `now` back as `since` to see only what happened in between.
 
 Waits up to `block` seconds for the notebook to go idle, so following up a run that returned `finished=false` is one call rather than a poll loop. Returns immediately when nothing is running, and stops waiting the moment a cell errors.""",
     parameters=[
-        ToolParameter(name="since", type="number", description="Unix time to count changes from; omit for everything recorded", required=false),
+        ToolParameter(name="since", type="number", description="Unix time to report changes from; omit for everything recorded", required=false),
         ToolParameter(name="block", type="number", description="Seconds to wait for the notebook to go idle (default 1). Costs nothing when it already is — the wait ends the moment nothing is running. Raise it to follow a long run to completion.", required=false, default=1),
         ToolParameter(name="session", type="string", description="Which session", required=false, default="default"),
     ],
@@ -212,17 +227,17 @@ Waits up to `block` seconds for the notebook to go idle, so following up a run t
               !any(c -> c.errored && !(c.cell_id in errored_before), nb.cells)
             sleep(0.05)
         end
-        v = get(CHANGES, String(name), Float64[])
+        log = get(CHANGES, String(name), NamedTuple[])
         since = haskey(args, "since") && args["since"] !== nothing ? Float64(args["since"]) : -Inf
         labels = cell_labels(nb)
         busy = busy_cells(nb)
+        changes = [c for c in log if c.at > since]
         _ok((idle = isempty(busy),
-             questions_waiting = length(get(INBOX, String(name), Any[])),
              running = [labels[string(c.cell_id)] for c in busy],
              errored = [labels[string(c.cell_id)] for c in nb.cells if c.errored],
-             changes = count(>(since), v),
+             changes = changes,
              now = time(),
-             last_change = isempty(v) ? nothing : last(v)))
+             last_change = isempty(log) ? nothing : last(log).at))
     end),
     return_type=TextContent,
 )
@@ -260,7 +275,7 @@ Images come back viewable. SVG is withheld by default — a plot is ~100 KB of m
 
 pluto_png = MCPTool(
     name="png",
-    description="Render a plotting cell as a PNG, whatever its native output format. Re-runs the cell's code wrapped in savefig, inside a temporary cell that is always removed. Cheap for a plot, wasteful if the cell also does expensive work.",
+    description="Render a plotting cell as a PNG, whatever its native output format (Plots.jl or Makie). For a NAMED cell (one that defines a single global, e.g. `fig = plot(...)`), renders that existing global -- no re-run, no risk of a 'multiple definitions' error. An unnamed cell is re-run inside a temporary probe, which is always removed. Cheap for a plot, wasteful if the cell also does expensive work.",
     parameters=[
         ToolParameter(name="cell_id", type="string", description=CELL_REF_DOC, required=true),
         ToolParameter(name="session", type="string", description="Which session", required=false, default="default"),
@@ -268,27 +283,49 @@ pluto_png = MCPTool(
     handler=(args -> @safely begin
         name = _sess(args); s = _session(name); nb = _notebook(name)
         c = resolve_cell(nb, args["cell_id"])
+        label = cell_labels(nb)[string(c.cell_id)]
+        named = label != string(c.cell_id)
         tmp = tempname() * ".png"
-        probe = Pluto.Cell("""begin
-    local __fig = begin
-$(c.code)
+        # `__fig` for a named cell just READS the existing global -- no
+        # redefinition, so no "multiple definitions" clash with the cell that
+        # actually owns it. An unnamed cell has nothing to read, so it is
+        # re-run inline instead, same as before this fix.
+        fig_expr = named ? label : "begin\n$(c.code)\nend"
+        probe = Pluto.Cell("""let
+    __fig = $fig_expr
+    __path = $(repr(tmp))
+    try
+        savefig(__fig, __path)      # Plots.jl
+    catch
+        save(__path, __fig)         # Makie
     end
-    savefig(__fig, $(repr(tmp)))
     nothing
 end""")
-        push!(nb.cell_order, probe.cell_id); nb.cells_dict[probe.cell_id] = probe
+        Pluto.withtoken(nb.executetoken) do
+            push!(nb.cell_order, probe.cell_id); nb.cells_dict[probe.cell_id] = probe
+        end
         try
             Pluto.update_save_run!(s.session, nb, Pluto.Cell[probe]; run_async=false, save=false)
-            probe.errored && error("render failed: $(probe.output.body)")
-            isfile(tmp) || error("savefig wrote nothing — is this a plotting cell?")
+            if probe.errored || !isfile(tmp)
+                # A named cell's global already has a rendered output; fall
+                # back to serving that rather than failing outright.
+                if named && startswith(string(c.output.mime), "image/") && c.output.body isa Vector{UInt8}
+                    return ImageContent(data=c.output.body, mime_type=string(c.output.mime))
+                end
+                probe.errored && error("render failed: $(probe.output.body)")
+                error("savefig/save wrote nothing — is this a plotting cell?")
+            end
             ImageContent(data=read(tmp), mime_type="image/png")
         finally
             # Always remove the probe: a temp cell left in someone's notebook is
             # a cell they have to explain to themselves later.
-            i = findfirst(==(probe.cell_id), nb.cell_order)
-            i === nothing || deleteat!(nb.cell_order, i)
-            delete!(nb.cells_dict, probe.cell_id)
-            Pluto.update_save_run!(s.session, nb, Pluto.Cell[probe]; run_async=false)
+            Pluto.withtoken(nb.executetoken) do
+                i = findfirst(==(probe.cell_id), nb.cell_order)
+                i === nothing || deleteat!(nb.cell_order, i)
+                delete!(nb.cells_dict, probe.cell_id)
+            end
+            _forget_seen!(name, probe.cell_id)
+            Pluto.update_save_run!(s.session, nb, Pluto.Cell[probe]; run_async=false, save=false)
             rm(tmp; force=true)
         end
     end),
@@ -305,26 +342,8 @@ pluto_stop = MCPTool(
     return_type=TextContent,
 )
 
-pluto_questions = MCPTool(
-    name="questions",
-    description="""Questions the user asked from the notebook UI, and a hint of what they were looking at.
-
-Pluto's "Ask AI" panel normally builds a prompt for someone to paste into a chat elsewhere. When this session is attached, it sends the question here instead, together with the context Pluto assembled: the cell, its code, its output, and the cells it depends on.
-
-Each question is returned once and then cleared, so poll this after `status` reports changes, or whenever the user says they asked something. Answer by editing the notebook — that is the whole point of being attached to it.""",
-    parameters=[ToolParameter(name="session", type="string", description="Which session", required=false, default="default")],
-    handler=(args -> @safely begin
-        name = _sess(args)
-        _session(name)                       # fail clearly if there is no session
-        qs = take_questions!(name)
-        _ok((count=length(qs), questions=qs))
-    end),
-    return_type=TextContent,
-)
-
 const ALL_TOOLS = [pluto_start, pluto_open, pluto_create, pluto_read, pluto_edit,
-                   pluto_run, pluto_status, pluto_output, pluto_png,
-                   pluto_questions, pluto_stop]
+                   pluto_run, pluto_status, pluto_output, pluto_png, pluto_stop]
 
 function build_server()
     mcp_server(
