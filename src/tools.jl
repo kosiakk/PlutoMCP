@@ -572,12 +572,16 @@ end
 Serve over stdio, MCP's default transport. Blocks forever reading stdin: this
 is the entry point for a client that launches the server as a subprocess.
 
-Does NOT redirect stdout. Tried that first and it broke the server completely:
-ModelContextProtocol.jl's `run_server_loop` writes every response with a bare
-`println(response); flush(stdout)` -- no stream argument, just the `stdout`
-global -- so redirecting stdout does not shield the transport from stray
-prints, it silently redirects the JSON-RPC itself.
+Sends host-side logging to stderr rather than redirecting stdout. Redirecting
+was tried and reverted: ModelContextProtocol.jl's `run_server_loop` writes every
+response with a bare `println(response); flush(stdout)` -- no stream argument,
+just the `stdout` global -- so `redirect_stdout(stderr)` does not shield the
+transport from stray prints, it silently redirects the JSON-RPC itself. Setting
+the global logger is the version that works: Pluto's host-side chatter goes to
+stderr, and worker (cell) output was never on stdout at all, since Malt keeps
+worker streams on private pipes.
 """
 function run_server()
+    global_logger(ConsoleLogger(stderr))
     start!(build_server())
 end

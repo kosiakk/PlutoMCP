@@ -17,6 +17,7 @@ using Pluto
 using Sockets
 using UUIDs
 using JSON3
+using Logging
 using ModelContextProtocol
 
 include("render.jl")
