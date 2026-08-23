@@ -115,7 +115,9 @@ Pluto runs cells in DEPENDENCY order and allows one definition of a global per c
         for c in nb.cells
             _mark_seen!(name, nb.notebook_id, c.cell_id, c.code)
         end
-        inject_helpers!(s.session, nb)
+        # ensure, not inject: reopening an already-open notebook (a hit above)
+        # has a live, already-injected worker, and the identity check is free.
+        ensure_helpers!(s.session, nb)
         _ok(record(name, nb, nb.cells, finished, waited; url=notebook_url(s, nb), path=nb.path))
     end),
     return_type=TextContent,
