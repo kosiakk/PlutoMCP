@@ -402,6 +402,11 @@ end""")
         Pluto.withtoken(nb.executetoken) do
             push!(nb.cell_order, probe.cell_id); nb.cells_dict[probe.cell_id] = probe
         end
+        # Mark it seen before it ever runs, same as edit's insert: a temporary
+        # probe that gets deleted a few lines down is not "what changed" from
+        # status's point of view, and without this it would show up there as
+        # a spurious "inserted" entry.
+        _mark_seen!(name, nb.notebook_id, probe.cell_id, probe.code)
         try
             Pluto.update_save_run!(s.session, nb, Pluto.Cell[probe]; run_async=false, save=false)
             if probe.errored || !isfile(tmp)

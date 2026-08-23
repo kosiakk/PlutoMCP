@@ -473,11 +473,17 @@ end
     call("edit", Dict("session" => S, "edit_mode" => "insert",
                       "new_source" => "fig = plot(1:10, (1:10).^2)", "block" => 120))
 
+    s0 = call("status", Dict("session" => S))
     img = TOOLS["png"].handler(Dict("session" => S, "cell_id" => "fig"))
     @test img isa P.ImageContent
     @test img.mime_type == "image/png"
     @test length(img.data) > 1000
     @test img.data[1:4] == UInt8[0x89, 0x50, 0x4e, 0x47]   # PNG magic
+
+    # The probe cell it renders through and immediately deletes must not
+    # show up in status as a spurious insertion.
+    s1 = call("status", Dict("session" => S, "since" => s0.now))
+    @test !any(c -> occursin("savefig", c.new_source), s1.changes)
 
     # The temporary render cell must not be left behind.
     @test all(c -> !occursin("savefig", c.code), call("read", Dict("session" => S)))
