@@ -36,10 +36,11 @@ same thing on a cell as on the record:
   record back, narrowed to what changed. Never compute a timestamp yourself;
   copy the one you were given.
 
-`wait_seconds` defaults to 0, so a call returns immediately with
-`status=calculating` and the ids of the cells involved. Pass a real number when
-you want the answer in the same call: `wait_seconds=30` for ordinary work,
-more for a first `using SomePackage` (Pluto installs it) or a long computation.
+`wait_seconds` defaults to 0.1, which is enough for an ordinary cell, so the
+common case comes back complete in one call. Raise it for work you expect to be
+slow — `wait_seconds=60` for a first `using SomePackage` (Pluto installs it) or
+a long computation. Pass `0` to fire and forget, which is how you author a run
+of cells before reading any of them.
 
 ## Reactivity changes how you edit
 
@@ -105,6 +106,23 @@ so a long print loop loses exactly the part you wanted.
 Each cell entry carries `name` (the global it defines — that is also how you
 address it), `cell_id`, `status`, `code`, the rendered output, log entries, and
 an `error` message if it failed.
+
+A cell you have already been shown, unchanged, comes back short:
+
+```
+{"name": "total", "status": "success", "unchanged_since": 1787485656.06}
+```
+
+That is the same cell, not a different one — you already have its code and its
+output further up. Nothing is hidden: every cell the cascade touched is still
+listed, so you can see the blast radius of an edit at a glance. If you want the
+full text of one again, call `output(cell=...)`; if you want only what actually
+changed, pass `since`.
+
+`unchanged_since` certifies the *rendered* output. For a container that is the
+one-line sketch, not the underlying values: two arrays with the same sketch can
+differ deeper in. When that matters, a probe cell answers it — `hash(x)`,
+`extrema(x)`, `sum(x)`.
 
 - Output is a **sketch**, one line: `Vector{Float64}, ≥30 elements: [0.12, …]`.
   For the full text of one cell, call `output(cell=...)`.
