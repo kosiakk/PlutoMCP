@@ -121,3 +121,41 @@ Simplicity is enforced, not preferred.
 Accepted imperfections stay accepted: a failed `delete_on_success` cell reaches the file until the agent removes it; no hiding logic, because it is visible and the agent cleans it up.
 Every future addition needs evidence from usage logs, not symmetry, completeness, or anticipation.
 When a capability seems missing, the first question is always: is it a cell?
+
+## Explored and rejected
+
+A post-mortem, so these are not reopened without new evidence. Each entry names what would count as new evidence.
+
+**Redirecting stdout to protect the transport.** `ModelContextProtocol.jl`'s `run_server_loop` writes every response with a bare `println(response)`, using the `stdout` global, so redirecting that global redirects the JSON-RPC itself and the server goes silent. Fixed at the logger instead. Reopen only if the transport stops using the global.
+
+**A second evaluation path** (`execute`, a scratchpad, a hidden REPL). A probe that runs where the human cannot see it breaks the review model, and everything it could do a cell already does. Reopen if usage logs show probes that genuinely cannot be cells.
+
+**A `png` tool that inserts, runs and deletes a probe cell.** It reimplemented `edit` in order to render a plot. `AsPNG` moves the capability into a cell, where it costs no tool.
+
+**Defining `AsPNG` in the current workspace module.** Pluto builds a fresh `Main.workspace#N` on every reactive run and moves variables across, so anything defined in the old module is gone by the next call. The durable places are the worker's `Main` and `PlutoRunner.workspace_preamble`.
+
+**Detecting completion from `running`/`queued`/timestamps.** A cell that fails to PARSE never reaches either flag, so the heuristic reports it as settled when it never ran. A `Task` and `istaskdone` are the literal answer.
+
+**Coercing bond values by type-guessing.** Parsing numeric-looking strings into numbers corrupts a text field whose content really is `7`, to fix a caller who should have sent a JSON number. The value's type is the caller's to get right, and the parameter description says so.
+
+**Fingerprinting the truncated payload rather than the raw entry.** Two different 40 MB outputs share a head and a tail, so they would fingerprint the same and the second would never be reported.
+
+**Including Pluto's `:objectid` in the fingerprint.** Re-running `v = ones(5)` allocates a new array and therefore a new objectid, with byte-identical output. Including it would mark every container changed on every run, defeating dedup exactly where it pays.
+
+**Assembling a record under `nb.executetoken`.** That is Pluto's RUN lock, held for a whole reactive run, so waiting for it would make every `wait_seconds=0` call block on the run it was trying not to wait for. Stamping the timestamp first gives the ordering guarantee without the lock.
+
+**A parse-error autofix hook.** The agent is the only writer and the server never mutates cell content on its own. A parse error is an errored cell with a message; the agent reads it and rewrites the cell. Autofix-with-diff-and-revert is a human UI feature and belongs in Pluto upstream.
+
+**An in-notebook "ask AI" inbox, behind a fork of Pluto.** A feature that needs a fork is a feature nobody has. The terminal already carries text, and browser edits already carry code.
+
+**An in-cell notebook-control API (`@notebook` macro or similar).** Cells run in the worker, the session API lives in the host, so this would be a second RPC control path and would make cells writers of their own notebook.
+
+**Replicating Pluto's expand-rows protocol for containers.** The agent's expand is a cell: `x[4090:4110]`, `describe(df)`, `quantile(x, [0.01, 0.5, 0.99])`.
+
+**A `full` parameter on `read`.** Full text for one cell is `output`'s job, and two ways to ask the same question is one too many.
+
+**`wait_seconds` defaulting to 0.** An ordinary cell finishes in milliseconds, so every edit came back `calculating` and needed a second call to learn it had already succeeded. 0.1 keeps the fire-and-forget available without making it the default.
+
+**Cell names as identity.** Names are addressing convenience, taken from Pluto's reactivity graph; the UUID is the identity and is always accepted. A cell that stops parsing loses its name, and an identity that disappears when the code breaks is not an identity.
+
+**`uuid1` for new cells,** which is `Pluto.Cell`'s own default. It is time-based, so cells created in one tick share a long leading run of digits and a short prefix identifies nothing. `uuid4` keeps prefixes discriminating.
