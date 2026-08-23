@@ -351,7 +351,10 @@ end
     m = call("edit", Dict("session" => S, "mode" => "insert",
                           "code" => "# a heading", "cell_type" => "markdown",
                           "wait_seconds" => 60))
-    @test occursin("md\"\"\"", only(c.code for c in m.cells))
+    @test !haskey(only(m.cells), :code)
+    wrapped = call("read", Dict("session" => S,
+                                "cells" => [only(c.cell_id for c in m.cells)]))
+    @test occursin("md\"\"\"", only(c.code for c in wrapped.cells))
 
     d = call("edit", Dict("session" => S, "cell" => only(c.cell_id for c in m.cells),
                           "mode" => "delete", "wait_seconds" => 60))
@@ -383,7 +386,8 @@ end
     @test !haskey(entry, :code)
     @test entry.output == "42"                  # everything asked for is still there
 
-    # Replace is the same promise.
+    # Replace is the same promise, with no comparison of contents: the caller
+    # initiated the write, so the text cannot have become news in between.
     r2 = call("edit", Dict("session" => S, "cell" => "echoed",
                            "code" => "echoed = 6 * 8", "wait_seconds" => 60))
     @test !haskey(only(c for c in r2.cells if c.name == "echoed"), :code)
@@ -393,10 +397,10 @@ end
     md = call("edit", Dict("session" => S, "mode" => "insert", "cell_type" => "markdown",
                            "code" => "a heading", "wait_seconds" => 60))
     entry_md = only(md.cells)
-    @test haskey(entry_md, :code) && occursin("md\"\"\"", entry_md.code)
+    @test !haskey(entry_md, :code)
 
-    # A cell the agent did not write is not an echo either: the cascade a
-    # replace sets off has to arrive in full.
+    # An execution cascade never rewrites code, so a downstream cell re-runs
+    # without repeating its source -- the answer is the news, not the code.
     call("edit", Dict("session" => S, "mode" => "insert",
                       "code" => "downstream_of_echoed = echoed + 1", "wait_seconds" => 60))
     r3 = call("edit", Dict("session" => S, "cell" => "echoed",
@@ -593,8 +597,11 @@ end
     # fresh object and a fresh objectid; the fingerprint deliberately ignores
     # that, because it identifies the rendered output, not the object.
     call("run", Dict("session" => T, "cells" => ["derived"], "wait_seconds" => 60))
-    @test haskey(only(call("read", Dict("session" => T, "cells" => ["derived"])).cells),
-                 :unchanged_since)
+    bare = call("read", Dict("session" => T))
+    @test haskey(only(c for c in bare.cells if c.name == "derived"), :unchanged_since)
+    # ...but naming it asks to be told, so it comes back whole.
+    named = call("read", Dict("session" => T, "cells" => ["derived"]))
+    @test haskey(only(named.cells), :code) && haskey(only(named.cells), :output)
 
     # `since` is the same comparison shown as a delta rather than a summary.
     # Empty is the honest answer when every record so far already delivered
@@ -602,11 +609,7 @@ end
     t = call("read", Dict("session" => T)).timestamp
     @test isempty(call("read", Dict("session" => T, "since" => t)).cells)
 
-    # A float unix time is still a timestamp: transcripts and older clients
-    # have them, and refusing one would only lose a delta. A string that is
-    # not a timestamp is refused with a message that shows the shape wanted.
-    unix = P.parse_timestamp(t)
-    @test isempty(call("read", Dict("session" => T, "since" => unix)).cells)
+    # A string that is not a timestamp is refused with the shape it wanted.
     bad = call("read", Dict("session" => T, "since" => "yesterday"))
     @test bad.error && occursin("timestamp", bad.message)
 
@@ -625,6 +628,12 @@ end
     @test any(c -> get(c, :old_code, "") == "base = 5" && c.code == "base = 7",
               delta.cells)
 
+    # A float unix time is still a timestamp: transcripts and older clients have
+    # them, and refusing one would only lose a delta. Asked LAST, because a read
+    # is not free of consequence -- it reports, and reporting is what makes the
+    # next record able to leave things out.
+    @test isempty(call("read", Dict("session" => T, "since" => P.parse_timestamp(t))).cells)
+
     call("stop", Dict("session" => T))
     @test !any(k -> first(k) == T, keys(P.REPORTED))
 end
@@ -637,7 +646,7 @@ end
     call("open", Dict("session" => T, "create" => true, "wait_seconds" => 120))
     call("edit", Dict("session" => T, "mode" => "insert", "code" => "vals = ones(5)",
                       "wait_seconds" => 60))
-    call("read", Dict("session" => T, "cells" => ["vals"]))
+    call("read", Dict("session" => T))
     call("run", Dict("session" => T, "cells" => ["vals"], "wait_seconds" => 60))
     # A bare read is where compaction shows: naming the cell asks to be told
     # about it, and is answered in full.
@@ -671,15 +680,6 @@ end
     @test edited.code == "a = 9"
     # ...and the cascade it caused is in the same record, without a second call.
     @test any(c -> c.name == "total", theirs.cells)
-end
-
-@testset "reads reflect the live notebook" begin
-    # Mutate the Notebook directly, the way Pluto's frontend patches do, and
-    # confirm a read sees it with no refresh step of any kind.
-    nb = P._notebook(S)
-    P.resolve_cell(nb, "a").code = "a = 12345"
-    @test any(c -> get(c, :code, "") == "a = 12345",
-              call("read", Dict("session" => S)).cells)
 
     # A report asked for BY NAME answers with those cells. A human deleting
     # some other cell is real news, but it is not what this call asked about --
@@ -695,6 +695,15 @@ end
     Pluto.update_save_run!(P._session(S).session, nb2, Pluto.Cell[doomed]; run_async=false)
     named = call("read", Dict("session" => S, "cells" => ["a"]))
     @test only(named.cells).name == "a"
+end
+
+@testset "reads reflect the live notebook" begin
+    # Mutate the Notebook directly, the way Pluto's frontend patches do, and
+    # confirm a read sees it with no refresh step of any kind.
+    nb = P._notebook(S)
+    P.resolve_cell(nb, "a").code = "a = 12345"
+    @test any(c -> get(c, :code, "") == "a = 12345",
+              call("read", Dict("session" => S)).cells)
     P.resolve_cell(nb, "a").code = "a = 6"
     call("run", Dict("session" => S, "cells" => ["a"], "wait_seconds" => 60))
 end

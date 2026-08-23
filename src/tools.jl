@@ -285,10 +285,6 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
         name = _sess(args); s = _session(name); nb = _nb(args)
         mode = get(args, "mode", "replace")
         code = String(something(get(args, "code", nothing), ""))
-        # What the CALLER sent, before any wrapping: the echo test compares
-        # against this, so a markdown cell -- whose stored text is not what
-        # arrived -- still reports its code.
-        sent = code
         get(args, "cell_type", "code") == "markdown" && (code = _wrap_markdown(code))
         ref = get(args, "cell", nothing)
         throwaway = get(args, "delete_on_success", false) == true
@@ -315,18 +311,18 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
             at = ref === nothing ? length(nb.cell_order) :
                  findfirst(==(resolve_cell(nb, String(ref)).cell_id), nb.cell_order)
             Pluto.withtoken(nb.executetoken) do
-            _mark_code_sent!(name, nb.notebook_id, c.cell_id, code)
                 insert!(nb.cell_order, at + 1, c.cell_id)
                 nb.cells_dict[c.cell_id] = c
             end
             _mark_seen!(name, nb.notebook_id, c.cell_id, code)
+            _mark_code_sent!(name, nb.notebook_id, c.cell_id, code)
             # save=!throwaway is an implementation detail, not the contract:
             # skipping the intermediate write keeps a probe out of the file in
             # the common case. What the agent is promised is the deletion below.
             finished, waited, touched = run_with_deadline(name, nb, Pluto.Cell[c];
                                                           wait_seconds=_wait(args),
                                                           save=!throwaway)
-            r = drop_echoed_code(record(name, nb, touched, finished, waited), c, sent)
+            r = record(name, nb, touched, finished, waited)
             # Deleted iff the status is success at RETURN time -- that is the
             # whole contract, hence the name. An errored or still-calculating
             # cell stays: the agent has to see it to act on it, and a cell that
@@ -340,14 +336,14 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
                 r = merge(r, (hint="status is \"$(r.status)\", so the cell was kept — delete it with edit(mode=\"delete\", cell=\"$(c.cell_id)\") once you have read it.",))
             end
             _ok(r)
-            _mark_code_sent!(name, nb.notebook_id, c.cell_id, code)
         else
             c = resolve_cell(nb, String(ref))
             c.code = code
             _mark_seen!(name, nb.notebook_id, c.cell_id, code)
+            _mark_code_sent!(name, nb.notebook_id, c.cell_id, code)
             finished, waited, touched = run_with_deadline(name, nb, Pluto.Cell[c];
                                                           wait_seconds=_wait(args))
-            _ok(drop_echoed_code(record(name, nb, touched, finished, waited), c, sent))
+            _ok(record(name, nb, touched, finished, waited))
         end
     end),
     return_type=TextContent,
@@ -475,7 +471,7 @@ The notebook object is read directly, so a human's browser edits are already in 
 )
 
 """
-Human browser edits from the CHANGES log, as `old_code`/`new_code` to attach to
+Human browser edits from the CHANGES log, as `old_code` to attach to
 a cell's entry. The only history the notebook itself does not hold: an edit made
 through these tools marks itself seen before running, so what is left in the log
 is genuinely somebody else's.
