@@ -236,7 +236,8 @@ function cell_info(nb::Pluto.Notebook, c::Pluto.Cell, labels=cell_labels(nb))
      running = c.running,
      queued = c.queued,
      runtime_ns = c.runtime,
-     output_bytes = n)
+     output_bytes = n,
+     logs = c.logs)
 end
 
 cells_info(nb::Pluto.Notebook) =

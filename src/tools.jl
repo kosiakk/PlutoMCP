@@ -244,7 +244,7 @@ Waits up to `block` seconds for the notebook to go idle, so following up a run t
 
 pluto_output = MCPTool(
     name="output",
-    description="""One cell's output.
+    description="""One cell's output, plus its stdout/@info logs.
 
 Images come back viewable. SVG is withheld by default — a plot is ~100 KB of markup most clients cannot render inline — so call png for a picture, or pass raw=true if you genuinely want the markup.""",
     parameters=[
@@ -260,14 +260,14 @@ Images come back viewable. SVG is withheld by default — a plot is ~100 KB of m
         # letting it reach the image branch would return a picture for raw=true
         # and never the markup that flag exists to ask for.
         if mime == "image/svg+xml"
-            get(args, "raw", false) && return _ok((mime=mime, errored=c.errored, body=astext(body)))
+            get(args, "raw", false) && return _ok((mime=mime, errored=c.errored, body=astext(body), logs=c.logs))
             n = body === nothing ? 0 : (body isa AbstractString ? sizeof(body) : length(body))
             _ok((mime=mime, errored=c.errored, bytes=n, body="<SVG withheld: $n bytes>",
-                 hint="Call png for a viewable image, or output with raw=true for the markup."))
+                 hint="Call png for a viewable image, or output with raw=true for the markup.", logs=c.logs))
         elseif startswith(mime, "image/") && body isa Vector{UInt8}
             ImageContent(data=body, mime_type=mime)
         else
-            _ok((mime=mime, errored=c.errored, body=astext(body)))
+            _ok((mime=mime, errored=c.errored, body=astext(body), logs=c.logs))
         end
     end),
     return_type=Content,

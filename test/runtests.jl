@@ -174,6 +174,19 @@ end
     @test isempty(call("run", Dict("session" => S, "cells" => ["b"], "block" => 60)).errored)
 end
 
+@testset "logs" begin
+    call("edit", Dict("session" => S, "edit_mode" => "insert",
+                      "new_source" => "loud = (println(\"stdout line\"); @info \"info line\"; 1)",
+                      "block" => 60))
+    out = call("output", Dict("session" => S, "cell_id" => "loud"))
+    @test !isempty(out.logs)
+
+    read_logs = [c.logs for c in call("read", Dict("session" => S)) if c.name == "loud"]
+    @test !isempty(only(read_logs))
+
+    call("edit", Dict("session" => S, "cell_id" => "loud", "edit_mode" => "delete"))
+end
+
 @testset "unknown references" begin
     @test call("edit", Dict("session" => S, "cell_id" => "nope",
                             "new_source" => "1")).error
