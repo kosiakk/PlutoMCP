@@ -105,7 +105,13 @@ worker.
 """
 function _joined(vals::Vector{String}, truncated::Bool; full::Bool=false)
     if !full && length(vals) > SKETCH_HEAD + SKETCH_TAIL
-        vals = [vals[1:SKETCH_HEAD]; "…"; vals[end-SKETCH_TAIL+1:end]]
+        # When Pluto ALREADY truncated, the elements it sent are a head plus the
+        # container's real last one. Trimming a "tail" off that head puts
+        # elements 7 and 8 next to element 20 and calls them the end of the
+        # array — a display that is not merely short but wrong. Keep the head
+        # and the genuine last element; the middle is honestly absent.
+        vals = truncated ? [vals[1:SKETCH_HEAD]; "…"; vals[end]] :
+                           [vals[1:SKETCH_HEAD]; "…"; vals[end-SKETCH_TAIL+1:end]]
     elseif truncated
         vals = [vals[1:end-1]; "…"; vals[end]]
     end
@@ -119,12 +125,23 @@ A leaf whose body is itself a Dict is a nested container; it gets its own
 one-line sketch at depth+1, and anything deeper than that is `…`. This is the
 "one level of fields, no recursion" rule, enforced by construction rather than
 by hoping the data is shallow.
+
+`full` is `output` asking for everything, and it lifts the depth rule as well
+as the element trim — otherwise `(trimmed = (est = 0.94, ci = …))` is all
+`output` can ever say about a nested result, which is exactly what the record
+already said. `MAX_FULL_DEPTH` still stops it: Pluto's own tree is depth
+limited, and an unbounded walk is a promise this cannot keep.
 """
+const MAX_FULL_DEPTH = 4
+
 function _leaf(x, depth::Int; full::Bool=false)
     _is_more(x) && return "…"
     if x isa Tuple && length(x) == 2
         body, _ = x
-        body isa AbstractDict && return depth >= 1 ? "…" : sketch(body, depth + 1; full)
+        if body isa AbstractDict
+            deep = full ? depth >= MAX_FULL_DEPTH : depth >= 1
+            return deep ? "…" : sketch(body, depth + 1; full)
+        end
         return body isa AbstractString ? body : string(body)
     end
     string(x)
@@ -320,43 +337,17 @@ function cell_fingerprint(c::Pluto.Cell)
     h
 end
 
-# ------------------------------------------------------------------ html text --
-
-"""
-    html_text(html) -> String
-
-The text content of an HTML body, for the record's sketch of it.
-
-Markup is presentation, and presentation is for the browser the human is
-already watching: a markdown cell's `<div class="markdown"><h1 id=…>` wrapping
-says nothing its `code` does not, a widget's `<input>` says nothing at all, and
-either one is paid for by the token. What the text DOES carry that the code
-cannot is interpolated values — `md"the mean was \$(m)"` renders a number the
-source only names. So: scripts, styles and comments are dropped whole, block
-boundaries become newlines, tags go, entities decode, whitespace collapses.
-The full markup stays one `output` call away.
-"""
-function html_text(html::AbstractString)
-    t = replace(html, r"(?is)<(script|style)\b.*?</\1\s*>" => " ")
-    t = replace(t, r"(?s)<!--.*?-->" => " ")
-    t = replace(t, r"(?i)</(p|div|li|tr|h[1-6]|blockquote|pre|table|ul|ol)\s*>" => "\n",
-                r"(?i)</t[dh]\s*>" => " ", r"(?i)<br\s*/?>" => "\n")
-    t = replace(t, r"<[^>]*>" => "")
-    t = replace(t, "&lt;" => "<", "&gt;" => ">", "&quot;" => "\"",
-                "&#39;" => "'", "&nbsp;" => " ", "&amp;" => "&")
-    t = replace(t, r"[ \t]+" => " ")
-    String(strip(replace(t, r" ?\n[ \n]*" => "\n")))
-end
-
 # --------------------------------------------------------------- cell output --
 
 """
     render_output(nb, c, label) -> NamedTuple
 
 The rendered-output half of a cell record: `mime` always, plus `output` for
-anything textual (HTML arrives as its extracted text), and `error` for a cell
-that failed. Binary is `mime` alone — the `output` tool returns the picture
-itself, as MCP image content, and nothing about bytes belongs in a record.
+anything textual, and `error` for a cell that failed.
+
+`mime` alone for the two kinds of output that are not worth words: binary,
+whose picture the `output` tool returns as MCP image content, and `text/html`,
+whose rendering is the agent's own markdown or markup handed back to it.
 
 Errors are pulled apart rather than stringified: Pluto already hands back a
 structured parse error or stack trace, and flattening it into a blob only makes
@@ -373,10 +364,17 @@ function render_output(nb::Pluto.Notebook, c::Pluto.Cell, label::AbstractString)
         return (mime = mime, error = short(_stacktrace_text(body)))
     elseif body isa AbstractDict
         return (mime = mime, output = short(sketch(body)))
-    elseif mime == "text/html" && body isa AbstractString
-        # The record sketches HTML as its text, the way it sketches a container
-        # as one line: content, not markup. `output` returns the markup whole.
-        return (mime = mime, output = short(html_text(body)))
+    elseif mime == "text/html"
+        # Rendered text never comes back. A markdown or `html"…"` cell's output
+        # IS the code the agent wrote, re-encoded: the markup is Pluto's
+        # presentation for the human's browser, and the extracted text is that
+        # same prose with the formatting removed. Neither tells the author
+        # anything, and both are paid for by the token.
+        #
+        # A cell that interpolates a value (md"the mean is $(m)") needs no
+        # special case: the fingerprint covers the rendered body, so the cell
+        # re-reports when `m` moves, and `output` is there to be asked.
+        return (mime = mime,)
     elseif body isa Vector{UInt8}
         # The mime is the whole signal: the picture itself is one `output` call
         # away, as real MCP image content. A byte count is a number nobody can

@@ -127,16 +127,16 @@ bytes, and human-edit history.
 | `edit` | insert / replace / delete a cell, save, and run it |
 | `run` | recompute cells whose non-reactive inputs changed (a file, an RNG) — the backup path; `edit` already saves and runs |
 | `read` | cells as they are now: snapshot, dependency tree, wait, changes-since |
-| `output` | one cell's output, complete |
+| `output` | one cell's output, in the representation you name: the picture, the full value, or raw markup |
 | `bond` | set an `@bind`-ed variable's value, like moving its widget |
 | `export` | self-contained HTML with code and outputs embedded |
 | `stop` | stop the session, one notebook, or one running cell |
 
 Probing a value and reading a docstring are cells (`edit` with
 `delete_on_success=true`); dependencies are `read(tree=true)`; waiting is
-`read(wait_seconds=N)`. A picture is `output` on the plotting cell — Pluto
-stores SVG, which no client can show, so the figure is asked for a PNG
-instead; for a figure that is not a cell's own value, `PlutoMCP.AsPNG(fig)` in
+`read(wait_seconds=N)`. A picture is `output(mime="image/png")` on the plotting
+cell — Pluto stores SVG, which no client can show, so the figure is asked for a
+PNG instead; for a figure that is not a cell's own value, `PlutoMCP.AsPNG(fig)` in
 a cell does the same from inside the notebook, using a helper injected into
 every workspace. None of those is a tool, and SPEC.md records why.
 

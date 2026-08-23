@@ -479,6 +479,10 @@ function record(name::AbstractString, nb::Pluto.Notebook, cells, finished::Bool,
     # is suppressed. The only reason to name a cell is not knowing, or not
     # remembering, what is in it -- and an agent that knows does not ask.
     holds_code(c) = !full && get(sent, c.cell_id, nothing) == hash(c.code)
+    # Text this session already sent, whatever cell it came from. An output
+    # that hashes into this set is the agent's own input read back to it, which
+    # is the one thing a record never needs to carry.
+    held_text = full ? Set{UInt64}() : Set(values(sent))
 
     entries = Any[]
     statuses = String[]
@@ -514,6 +518,11 @@ function record(name::AbstractString, nb::Pluto.Notebook, cells, finished::Bool,
         # and any error are what the run was asked for.
         holds_code(c) ? (info = Base.structdiff(info, NamedTuple{(:code,)})) :
                         (sent[c.cell_id] = hash(c.code))
+        # ...and the same test on the way out: a cell whose rendered output is
+        # text this session supplied says nothing by repeating it.
+        haskey(info, :output) && info.output isa AbstractString &&
+            hash(String(info.output)) in held_text &&
+            (info = Base.structdiff(info, NamedTuple{(:output,)}))
         push!(entries, info)
     end
     merge((status = aggregate_status(statuses, finished),

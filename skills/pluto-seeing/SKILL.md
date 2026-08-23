@@ -23,8 +23,11 @@ That is free — it is already in the record you were returned. It answers
 "what shape is this", "what type", "roughly what magnitude". A `≥` means
 Pluto truncated: the true length is one cell away, not a guess to make.
 
-There is no expand protocol. If you want elements 4090–4110, that is a cell:
-`x[4090:4110]`.
+A nested field shown as `…` — `(trimmed = (est = 0.94, ci = …))` — is the
+record being brief, not the value being unavailable:
+`output(cell="robust", mime="text/plain")` expands it. There is still no expand
+protocol for the elements themselves; if you want elements 4090–4110, that is a
+cell: `x[4090:4110]`.
 
 ## 2. Statistics, not values
 
@@ -47,7 +50,7 @@ ask for the figure. `output` on a cell whose value is a plot renders it and
 returns the image:
 
 ```
-output(cell="residual_fit")
+output(cell="residual_fit", mime="image/png")
 ```
 
 Pluto stores one rendered MIME per cell and prefers SVG, which is markup no

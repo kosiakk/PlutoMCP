@@ -35,7 +35,7 @@ list()
 edit(notebook, cell=nothing, code=nothing, mode="replace", cell_type="code", wait_seconds=0.1, delete_on_success=false)
 run(notebook, cells=nothing, wait_seconds=0.1)
 read(notebook, cells=nothing, tree=false, wait_seconds=0.1, since=nothing)
-output(notebook, cell)
+output(notebook, cell, mime)
 bond(notebook, name, value, wait_seconds=0.1)
 export(notebook, path=nothing)
 stop(notebook=nothing, cell=nothing)
@@ -47,7 +47,7 @@ stop(notebook=nothing, cell=nothing)
 - `edit`: `mode` is `replace`, `insert` (after `cell`, or append when `cell=nothing`), or `delete`. Modes share every other argument, which is why one tool holds them. `delete_on_success=true`: the cell runs normally in the workspace, visible in the browser, and is deleted iff `status` is `success` at return time; otherwise it stays and the agent removes it by the returned id. With `wait_seconds=0` the server returns before witnessing success, so the flag never fires. That return-time deletion is its entire contract.
 - `run`: recompute cells (`cells=nothing` means all). Backup path only: `edit` saves and runs, human browser edits run through Pluto's UI, so `run` exists for cells whose non-reactive inputs changed (files on disk, RNG, env). The from-scratch reproducibility check is `stop` + `open`, not `run`.
 - `read`: snapshot, dependency tree (`tree=true`), wait until nothing is `pending`/`calculating` or a new error appears, changes since a timestamp including human edits. The one status/wait/diff tool.
-- `output`: one cell, complete. Full text, or PNG bytes for binary output. The only tool whose response is not the record.
+- `output`: one cell, in the representation the caller names. `mime` is required — `image/png` (a figure, SVG rasterised on the way out), `text/plain` (the full value, past the record's one-level rule), `text/html` (a markup cell's raw markup). The record already said what the cell stored, so a tool that guesses is a tool that returns markup nobody can read. The only tool whose response is not the record.
 - `bond`: set a `@bind` variable and report the cascade.
 - `export`: standalone HTML.
 
@@ -80,8 +80,10 @@ Output rendering:
 - Text: inline up to 2 KB; larger becomes head 1 KB + tail 1 KB + spill file path.
 - Homogeneous containers: Pluto's one-line sketch (length, eltype, head … tail). No expansion protocol; the agent's expand is a probe cell.
 - Structs and heterogeneous tuples: one level of fields, no recursion.
-- HTML (a markdown cell's rendering included): the text content, tags stripped. Markup is presentation for the browser the human is watching; what the text alone carries is interpolated values. Full markup via `output`.
-- Binary: MIME alone. The picture itself comes from `output`, as MCP image content; a byte count is a number nobody can look at, and nothing heavy or useless rides in the record.
+- HTML (a markdown cell's rendering included): MIME alone. A markdown or `html"…"` cell's rendering IS the code the agent wrote, re-encoded; its extracted text is that same prose with the formatting removed. Neither is worth a token. An interpolated value needs no special case: the fingerprint covers the rendered body, so the cell re-reports when the value moves, and `output` is there to be asked.
+- Binary: MIME alone. The picture itself comes from `output`, as MCP image content; a byte count is a number nobody can look at.
+
+One rule underneath both: **text the agent supplied never comes back**. `code` is dropped when the session already holds it, and an `output` whose text hashes into that same set of held code is dropped with it. Static markup is the case where a cell's output and its input are the same thing by construction.
 
 ## One vocabulary
 

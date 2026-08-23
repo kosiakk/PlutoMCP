@@ -27,7 +27,8 @@ offline_notebook(cells::Vector{String}; cell_types::Vector{String}=fill("code", 
 A record compacts cells this session has already been shown, so a value the
 suite wants to check again comes from `output` -- which is exactly the tool the
 agent would reach for."""
-cell_output(session, name) = call("output", Dict("session" => session, "cell" => name)).output
+cell_output(session, name) =
+    call("output", Dict("session" => session, "cell" => name, "mime" => "text/plain")).output
 
 "Every field the one record promises. Used as an acceptance test everywhere."
 const RECORD_FIELDS = (:status, :waited_seconds, :timestamp, :cells)
@@ -187,20 +188,27 @@ end
     @test occursin("…", P.sketch(deep))
     @test !occursin("1.0", P.sketch(deep))
 
+    # A truncated container's LAST element is the container's real last. Trimming
+    # a tail off the head Pluto sent would print elements 7 and 8 beside element
+    # 20 and call them the end of the array -- short is fine, wrong is not.
+    long = arr("Int64", [0, 1, 2, 3, 4, 5, 6, 7, 8, 20]; more=true)
+    @test P.sketch(long) == "Vector{Int64}, ≥10 elements: [0, 1, 2, 3, 4, 5, …, 20]"
+    @test P.sketch(long; full=true) == "Vector{Int64}, ≥10 elements: [0, 1, 2, 3, 4, 5, 6, 7, 8, …, 20]"
+
+    # `output` asking for everything lifts the depth rule too, or a nested
+    # result can never be read at all -- the record already said `ci = …`.
+    inner = arr("Float64", [0.27, 1.63])
+    nested_ci = Dict{Symbol,Any}(:type => :NamedTuple, :prefix => "", :prefix_short => "",
+        :elements => Any[(:est, ("0.94", MIME"text/plain"())),
+                         (:ci, (inner, MIME"application/vnd.pluto.tree+object"()))])
+    outer = Dict{Symbol,Any}(:type => :NamedTuple, :prefix => "", :prefix_short => "",
+        :elements => Any[(:trimmed, (nested_ci, MIME"application/vnd.pluto.tree+object"()))])
+    @test P.sketch(outer) == "(trimmed = (est = 0.94, ci = …))"
+    @test P.sketch(outer; full=true) == "(trimmed = (est = 0.94, ci = Float64[0.27, 1.63]))"
+
     @test P.sketch(Dict{Symbol,Any}(:type => :circular)) == "#= circular reference =#"
     # An unfamiliar tree type is summarised, never dumped.
     @test P.sketch(Dict{Symbol,Any}(:type => :SomethingNew)) == "<SomethingNew>"
-end
-
-@testset "html_text: content, not markup" begin
-    @test P.html_text("<div class=\"markdown\"><h1>Hi</h1>\n<p>a <strong>b</strong> c</p>\n</div>") ==
-          "Hi\na b c"
-    @test P.html_text("<script>alert(1)</script><style>p{color:red}</style>ok") == "ok"
-    @test P.html_text("<table><tr><td>a</td><td>1</td></tr><tr><td>b</td><td>2</td></tr></table>") ==
-          "a 1\nb 2"
-    @test P.html_text("<input type=range>") == ""              # a widget says nothing
-    @test P.html_text("2 &lt; 3 &amp;&amp; x") == "2 < 3 && x"
-    @test P.html_text("&amp;lt; stays literal") == "&lt; stays literal"
 end
 
 @testset "the vocabulary has no synonyms" begin
@@ -428,6 +436,16 @@ end
     one = call("read", Dict("session" => S, "cells" => ["downstream_of_echoed"]))
     @test only(c.code for c in one.cells) == "downstream_of_echoed = echoed + 1"
     @test only(c.output for c in one.cells) == "55"          # and all the details
+
+    # An output that is text this session supplied is dropped the same way the
+    # code is: a cell whose value IS the string the agent just wrote says
+    # nothing by reading it back.
+    lit = "a string that is its own output"
+    e = call("edit", Dict("session" => S, "mode" => "insert",
+                          "code" => lit, "cell_type" => "markdown", "wait_seconds" => 60))
+    @test !haskey(only(e.cells), :output)
+    call("edit", Dict("session" => S, "cell" => String(only(e.cells).cell_id),
+                      "mode" => "delete", "wait_seconds" => 60))
 
     for n in ("downstream_of_echoed", "echoed", entry_md.name)
         call("edit", Dict("session" => S, "cell" => n, "mode" => "delete",
@@ -754,36 +772,41 @@ end
 
 end
 
-@testset "html arrives as text, not markup" begin
-    # A markdown cell renders to text/html. The record's job is the CONTENT --
-    # the agent already holds the md source as `code`, and the one thing the
-    # rendering adds is interpolated values. Tag soup is for the browser.
+@testset "rendered markup never comes back" begin
+    # A markdown cell's rendering IS the prose the agent just wrote, re-encoded.
+    # The record says what mime it produced and stops there.
     r = call("edit", Dict("session" => S, "mode" => "insert", "cell_type" => "markdown",
                           "code" => "# Findings\n\nThe **mean** over \$(2+3) runs was significant.",
                           "wait_seconds" => 60))
     c = only(r.cells)
     @test c.mime == "text/html"
-    @test !occursin("<", c.output)               # no markup in the record
-    @test occursin("Findings", c.output)
-    @test occursin("5", c.output)                # interpolated VALUES survive
-    full = call("output", Dict("session" => S, "cell" => String(c.cell_id)))
-    @test occursin("<h1", full.output)           # the whole markup, on request
+    @test !haskey(c, :output)            # not the markup, and not its text either
+    @test !haskey(c, :code)              # the caller wrote it; it is not read back
+
+    # The markup is still reachable, for the one caller who wants it.
+    raw = call("output", Dict("session" => S, "cell" => String(c.cell_id),
+                              "mime" => "text/html"))
+    @test occursin("<h1", raw.output)
+    @test occursin("5", raw.output)      # the interpolation did run
+
+    # text/plain on a markup cell is refused, with the reason.
+    refused = call("output", Dict("session" => S, "cell" => String(c.cell_id),
+                                  "mime" => "text/plain"))
+    @test refused.error && occursin("markup", refused.message)
 
     w = call("edit", Dict("session" => S, "mode" => "insert",
                           "code" => "html\"<table><tr><td>a</td><td>1</td></tr></table>\"",
                           "wait_seconds" => 60))
-    cw = only(w.cells)
-    @test !occursin("<td>", cw.output)
-    @test occursin("a 1", cw.output)
+    @test !haskey(only(w.cells), :output)
 
-    for id in (c.cell_id, cw.cell_id)
+    for id in (c.cell_id, only(w.cells).cell_id)
         call("edit", Dict("session" => S, "cell" => String(id), "mode" => "delete",
                           "wait_seconds" => 60))
     end
 end
 
 @testset "output: one cell, complete" begin
-    r = call("output", Dict("session" => S, "cell" => "total"))
+    r = call("output", Dict("session" => S, "cell" => "total", "mime" => "text/plain"))
     @test r.cell == "total"
     @test r.output == "42"
     @test r.status == "success"
@@ -796,7 +819,7 @@ end
     call("edit", Dict("session" => S, "mode" => "insert",
                       "code" => "long = Text(join(string.(1:20000), \"\\n\"))",
                       "wait_seconds" => 60))
-    big = call("output", Dict("session" => S, "cell" => "long"))
+    big = call("output", Dict("session" => S, "cell" => "long", "mime" => "text/plain"))
     @test occursin("full output:", big.output)
     # The marker is `… (<size> total, full output: <path>)` -- take the path up
     # to the closing paren, not to the next space.
@@ -815,7 +838,7 @@ end
     call("edit", Dict("session" => S, "mode" => "insert",
                       "code" => "shortened = join(string.(1:20000), \"\\n\")",
                       "wait_seconds" => 60))
-    s = call("output", Dict("session" => S, "cell" => "shortened"))
+    s = call("output", Dict("session" => S, "cell" => "shortened", "mime" => "text/plain"))
     @test occursin("bytes", s.output)                # Pluto's " ⋯ N bytes ⋯ "
     @test !occursin("\e[", s.output)                 # with its ANSI colouring stripped
     call("edit", Dict("session" => S, "cell" => "shortened", "mode" => "delete",
@@ -839,7 +862,7 @@ end
     call("edit", Dict("session" => S, "cell" => "printy", "mode" => "delete",
                       "wait_seconds" => 60))
 
-    @test call("output", Dict("session" => S, "cell" => "no-such-cell")).error
+    @test call("output", Dict("session" => S, "cell" => "no-such-cell", "mime" => "text/plain")).error
 end
 
 @testset "logs: structured, capped, counted" begin
@@ -908,7 +931,7 @@ end
 
     # TinySVG cannot show as PNG and has no savefig, so rendering declines and
     # the hint is what is left -- naming the cell, so it can be run as printed.
-    r = call("output", Dict("session" => S, "cell" => "svgfig"))
+    r = call("output", Dict("session" => S, "cell" => "svgfig", "mime" => "image/png"))
     @test !occursin("<path", string(r))          # not one screenful of it, either
     @test r.mime == "image/svg+xml"
     @test occursin("AsPNG(svgfig)", r.hint)
@@ -933,7 +956,7 @@ end
                                 "end"))
     call("edit", Dict("session" => S, "mode" => "insert", "wait_seconds" => 60,
                       "code" => "bothfig = BothWays()"))
-    r = call("output", Dict("session" => S, "cell" => "bothfig"))
+    r = call("output", Dict("session" => S, "cell" => "bothfig", "mime" => "image/png"))
     @test r.mime_type == "image/png"      # ImageContent, not a JSON record
     @test r.data isa Vector{UInt8} && !isempty(r.data)
 
@@ -1037,7 +1060,7 @@ end
 
     # The second open is current; the first is still reachable by path.
     @test cell_output(T, "which") == "2"
-    @test call("output", Dict("session" => T, "cell" => "which",
+    @test call("output", Dict("session" => T, "cell" => "which", "mime" => "text/plain",
                               "notebook" => basename(one.path))).output == "1"
 
     # Regression: CHANGES/SNAPSHOTS are keyed per NOTEBOOK. A shared per-session

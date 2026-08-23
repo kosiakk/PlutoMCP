@@ -541,9 +541,14 @@ end
 
 pluto_output = MCPTool(
     name="output",
-    description="One cell's output, complete: the full text where the record only had a sketch, or the picture when the cell's value is a figure — including one Pluto stored as SVG, which is asked for a PNG rather than handed over as markup. Oversize output spills to a file and the path is returned — read or grep it directly.",
+    description="""One cell's output, in the representation you ask for. `mime` says which, and it is required — the record already told you what the cell stored, and a tool that guesses is a tool that hands back markup nobody can read.
+
+`image/png` — the picture. A figure Pluto stored as SVG is asked for a PNG rather than handed over as markup; an oversize raster spills to a file and the path is returned.
+`text/plain` — the full text where the record carried a sketch, expanded past the one-level rule. Oversize text spills to a file; read or grep it directly.
+`text/html` — the raw markup of a markdown or `html\"…\"` cell. Rarely worth it: that cell's rendering is the text you wrote, which is why the record omits it.""",
     parameters=[
         ToolParameter(name="cell", type="string", description=CELL_REF_DOC, required=true),
+        ToolParameter(name="mime", type="string", description="What to return: \"image/png\" for a figure, \"text/plain\" for the full text of a value, \"text/html\" for a markup cell's raw markup.", required=true),
         NOTEBOOK_PARAM,
         SESSION_PARAM,
     ],
@@ -551,35 +556,44 @@ pluto_output = MCPTool(
         nb = _nb(args); c = resolve_cell(nb, String(args["cell"]))
         label = cell_labels(nb)[string(c.cell_id)]
         mime = string(c.output.mime); body = c.output.body
+        want = String(args["mime"])
+        want in ("image/png", "text/plain", "text/html") ||
+            error("mime: expected \"image/png\", \"text/plain\" or \"text/html\", got \"$want\"")
 
-        # Raster only. SVG is markup, not an image an MCP client can show, and
-        # handing back 100 KB of it as ImageContent produces a broken picture
-        # instead of a legible refusal -- which is exactly why AsPNG exists.
-        if body isa Vector{UInt8} && mime in RASTER_MIMES
-            # An image bigger than a comfortable payload is worth a path
-            # instead: the client and the server share a machine.
-            if length(body) > 1_000_000
-                dir = spill_dir(nb); mkpath(dir)
-                path = joinpath(dir, "$(_slug(label))-output." * last(split(mime, "/")))
-                write(path, body)
-                return _ok((cell=label, mime=mime, path=path))
+        if want == "image/png"
+            startswith(mime, "image/") ||
+                error("$label stored $mime, which is not a figure — ask for text/plain")
+            # Raster passes through; anything else (SVG above all) is markup,
+            # and markup of a picture is the one text worth nobody's bytes.
+            if body isa Vector{UInt8} && mime in RASTER_MIMES
+                # An image bigger than a comfortable payload is worth a path
+                # instead: the client and the server share a machine.
+                if length(body) > 1_000_000
+                    dir = spill_dir(nb); mkpath(dir)
+                    path = joinpath(dir, "$(_slug(label))-output." * last(split(mime, "/")))
+                    write(path, body)
+                    return _ok((cell=label, mime=mime, path=path))
+                end
+                return ImageContent(data=body, mime_type=mime)
             end
-            return ImageContent(data=body, mime_type=mime)
-        end
-        # Vector image formats: markup, and markup of a picture is the one text
-        # worth nobody's bytes. Asking the figure for a PNG costs ~300 image
-        # tokens against ~2000 for the same plot as a braille canvas, so the
-        # server does it here rather than spending a round trip telling the
-        # agent to write the cell that does it.
-        if startswith(mime, "image/")
             png = _render_png(_sess(args), nb, label)
             png === nothing || return ImageContent(data=png, mime_type="image/png")
             return _ok((cell=label, mime=mime,
-                        hint="This is $(mime) — markup, not a raster image, and not " *
-                             "worth reading. Rendering it as PNG failed or the notebook " *
-                             "was busy; `PlutoMCP.AsPNG($label)` in a delete_on_success " *
+                        hint="Rendering $label as PNG failed, or the notebook was " *
+                             "busy. `PlutoMCP.AsPNG($label)` in a delete_on_success " *
                              "cell does the same thing from inside the notebook."))
+        elseif want == "text/html"
+            mime == "text/html" ||
+                error("$label stored $mime, not text/html")
+            return _ok((cell=label, mime=mime, status=cell_status(c),
+                        output=truncate_payload(body isa AbstractString ? body : string(body);
+                                                nb, label, kind="html")))
         end
+        startswith(mime, "image/") &&
+            error("$label is a figure ($mime) — ask for image/png")
+        mime == "text/html" &&
+            error("$label rendered to markup. Its text is the markdown you wrote, " *
+                  "which you already have as `code`; ask for text/html for the markup itself.")
         text = body isa AbstractDict ? _full_text(body, mime) :
                body isa Vector{UInt8} ? String(copy(body)) :
                body === nothing ? "" : string(body)

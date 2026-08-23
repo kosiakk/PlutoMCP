@@ -64,8 +64,8 @@ definition of a global per cell**.
 
 **Every capability question has the same answer: write a cell.** Probing a
 value, reading a docstring, computing a statistic, expanding a container — all
-cells. (Looking at a plot is the one exception: `output` on the cell renders
-the figure and returns the picture.) There is no second evaluation path, and
+cells. (Looking at a plot is the one exception: `output(cell=..., mime="image/png")`
+renders the figure and returns the picture.) There is no second evaluation path, and
 that is deliberate: a probe that runs somewhere invisible is a probe the human
 reviewing your work cannot see.
 
@@ -128,8 +128,8 @@ A cell you have already been shown, unchanged, comes back short:
 That is the same cell, not a different one — you already have its code and its
 output further up. Nothing is hidden: every cell the cascade touched is still
 listed, so you can see the blast radius of an edit at a glance. If you want the
-full text of one again, call `output(cell=...)`; if you want only what actually
-changed, pass `since`.
+full text of one again, call `output(cell=..., mime="text/plain")`; if you want
+only what actually changed, pass `since`.
 
 `unchanged_since` certifies the *rendered* output. For a container that is the
 one-line sketch, not the underlying values: two arrays with the same sketch can
@@ -137,12 +137,21 @@ differ deeper in. When that matters, a probe cell answers it — `hash(x)`,
 `extrema(x)`, `sum(x)`.
 
 - Output is a **sketch**, one line: `Vector{Float64}, ≥30 elements: [0.12, …]`.
-  For the full text of one cell, call `output(cell=...)`.
-- HTML output — a markdown cell's rendering, a widget — arrives as its text
-  content, tags stripped; `output(cell=...)` returns the markup itself if you
-  ever need it. An image is `mime` alone: `output` returns the picture.
+  For the full value — including the nested fields the sketch shows as `…` —
+  call `output(cell=..., mime="text/plain")`.
+- `output` requires a `mime`, because it can hand back three different things:
+  `image/png` for a figure, `text/plain` for a value, `text/html` for a markup
+  cell's raw markup. The record's `mime` field tells you which one to ask for.
+- **A markdown cell's output never comes back**, and neither does a plot's or a
+  widget's: the entry is `mime` and nothing else. Your markdown renders to the
+  prose you just wrote, so there is nothing in it you do not have. A `success`
+  status is the confirmation that it rendered.
+- If a markdown cell interpolates a value — `md"the mean is $(m)"` — it will
+  re-report whenever that value changes, because the rendered output changed.
+  Ask for it with `mime="text/html"` if you need to see what it says.
 - Text over 2 KB spills to a file and the payload names the path. Read or grep
-  that file directly — it is on the same machine.
+  that file directly if you have filesystem tools; if you do not, a probe cell
+  that narrows the value (`x[1:20]`, `describe(x)`) is the way in.
 - `read(tree=true)` gives each cell's `references` and its `upstream` /
   `downstream` cells: what breaks if this changes.
 - `read(since=<timestamp>)` reports what a **human** edited in the browser,
