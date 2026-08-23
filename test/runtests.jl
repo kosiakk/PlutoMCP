@@ -414,6 +414,8 @@ end
     r = call("edit", Dict("session" => S, "mode" => "insert",
                           "code" => "broken = (", "wait_seconds" => 60))
     c = only(r.cells)
+    # Reported by NAME, the way the agent addresses a cell -- not by a UUID it
+    # never used. An unnamed cell is named by its id, so this one is its id.
     @test c.status == "error"
     @test r.status == "error"                     # aggregated by the one rule
     @test occursin("parseerror", c.mime)

@@ -293,13 +293,16 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
 
         if mode == "delete"
             c = resolve_cell(nb, String(ref))
+            # A label exists only while the cell does, and a UUID is not what
+            # the agent called the cell -- so name it before removing it.
+            gone = cell_labels(nb)[string(c.cell_id)]
             _remove_cell!(name, nb, c)
             # Hand the removed cell to the run: the topology then sees it defines
             # nothing, so its globals are released and dependents re-run.
             finished, waited, touched = run_with_deadline(name, nb, Pluto.Cell[c];
                                                           wait_seconds=_wait(args))
             _ok(record(name, nb, filter(x -> x.cell_id != c.cell_id, touched), finished, waited;
-                       deleted=string(c.cell_id)))
+                       deleted=gone))
         elseif mode == "insert"
             # cell_id=uuid4(): Cell's default is uuid1, which is time-based --
             # exactly the prefix collision that makes a short reference useless.
@@ -317,15 +320,16 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
             finished, waited, touched = run_with_deadline(name, nb, Pluto.Cell[c];
                                                           wait_seconds=_wait(args),
                                                           save=!throwaway)
-            r = record(name, nb, touched, finished, waited)
+            r = drop_echoed_code(record(name, nb, touched, finished, waited), c, sent)
             # Deleted iff the status is success at RETURN time -- that is the
             # whole contract, hence the name. An errored or still-calculating
             # cell stays: the agent has to see it to act on it, and a cell that
             # vanished mid-run is a worse surprise than one deleted on purpose.
             if throwaway && r.status == "success"
+                gone = cell_labels(nb)[string(c.cell_id)]
                 _remove_cell!(name, nb, c)
                 Pluto.update_save_run!(s.session, nb, Pluto.Cell[c]; run_async=false, save=false)
-                r = merge(r, (deleted=string(c.cell_id),))
+                r = merge(r, (deleted=gone,))
             elseif throwaway
                 r = merge(r, (hint="status is \"$(r.status)\", so the cell was kept — delete it with edit(mode=\"delete\", cell=\"$(c.cell_id)\") once you have read it.",))
             end
