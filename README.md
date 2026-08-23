@@ -17,8 +17,9 @@ Three consequences, and they are the whole design:
 - **Edits appear instantly in an open tab.** `Pluto.update_save_run!` calls
   Pluto's own `send_notebook_changes!`, which diffs against each client's
   snapshot and pushes patches. Pluto is already an MVC; this adds no second one.
-- **Runs report honestly.** A run waits a short deadline, then says whether it
-  finished. No polling for a fast cell, nothing blocked on a slow one.
+- **Runs report honestly.** Every call says `status: pending | calculating |
+  success | error`, and `calculating` means exactly that — not a timeout, not a
+  failure. Nothing blocks on a slow cell unless you ask it to.
 
 Pluto's reactive dependency graph is used rather than guessed at: cells are
 named for what they define, and nothing here parses Julia source.
@@ -77,41 +78,65 @@ places, which Pluto forbids by design.
 
 ## Setup
 
+As a Claude Code plugin, which configures the server for you:
+
+```sh
+claude plugin add kosiakk/PlutoMCP
+```
+
+Or by hand:
+
 ```sh
 git clone https://github.com/kosiakk/PlutoMCP.git ~/Documents/PlutoMCP
 cd ~/Documents/PlutoMCP && julia --project=. -e 'import Pkg; Pkg.instantiate()'
-```
-
-Register it with Claude Code:
-
-```sh
 claude mcp add pluto -- julia --project=$HOME/Documents/PlutoMCP \
     $HOME/Documents/PlutoMCP/bin/pluto_mcp_server.jl
 ```
 
+The plugin also ships two skills — `pluto-workflow` (the loop, throwaway probe
+cells, what the record means) and `pluto-seeing` (how to look at data without
+wasting context). The MCP server itself stays standalone and client-agnostic;
+the plugin is packaging, not a dependency.
+
 ## Tools
+
+Ten. Every capability question has the same answer — *the agent writes a cell* —
+so tools exist only where cells cannot reach: lifecycle, the result record, raw
+bytes, and human-edit history.
 
 | tool | what it does |
 |---|---|
 | `start` | start a Pluto server in-process |
-| `open` | open an existing `.jl` notebook |
-| `create` | author a whole notebook in one call |
+| `open` | get a notebook: open a `.jl` file, or `create=true` for a new one |
 | `list` | every notebook this session has open, and which is current |
-| `read` | list cells as they are now; runs nothing |
-| `edit` | replace / insert / delete a cell, then run it |
+| `edit` | insert / replace / delete a cell, save, and run it |
+| `run` | recompute cells whose non-reactive inputs changed |
+| `read` | cells as they are now: snapshot, dependency tree, wait, changes-since |
+| `output` | one cell's output, complete |
 | `bond` | set an `@bind`-ed variable's value, like moving its widget |
-| `run` | run cells |
-| `status` | what is still running, and which cells a human changed since you last looked |
-| `execute` | evaluate an expression in the workspace, no cell created |
-| `output` | one cell's output, plus its logs |
-| `png` | render a plotting cell as an image |
-| `deps` | upstream/downstream cells for a name: what breaks if it changes |
-| `docs` | docstrings for every symbol a cell references |
 | `export` | self-contained HTML with code and outputs embedded |
-| `stop` | shut the server down |
+| `stop` | stop the session, one notebook, or one running cell |
 
-`edit` follows `NotebookEdit`'s vocabulary: `cell_id`, `new_source`,
-`cell_type`, `edit_mode`.
+There is no `execute`, no `docs`, no `deps`, no `png` and no `status`. Probing a
+value and reading a docstring are cells (`edit` with
+`delete_on_success=true`); dependencies are `read(tree=true)`; waiting is
+`read(wait_seconds=N)`; a picture is `PlutoMCP.AsPNG(fig)` in a cell, using a
+helper injected into every workspace.
+
+## One record
+
+Every response except `output`'s bytes, `start`'s host/secret and `list`'s
+paths parses as the same record:
+
+```json
+{"status": "success", "waited_seconds": 0.4, "timestamp": 1787485656.06,
+ "cells": [{"name": "total", "cell_id": "…", "status": "success",
+            "code": "total = a * b", "mime": "text/plain", "output": "42"}]}
+```
+
+`status` is one enum — `pending | calculating | success | error` — on cells and
+on the record alike. `cells` covers everything the reactive cascade touched,
+including cells that re-ran cleanly.
 
 ## Cells have names
 
@@ -132,23 +157,23 @@ Two rules hold this together:
 
 ## Long-running cells
 
-`run`, `edit` and `create` take a `block` (default 1 second). They start the
-work, wait that long, and return either the finished result or:
+Everything that runs takes `wait_seconds` (default 0). The call returns on
+completion, on a new error, or on expiry — whichever comes first. Expiry shows
+as `status: "calculating"`, which is neither an error nor a timeout: the cell is
+still going, the browser already shows it running, and
 
-```json
-{"finished": false, "still_running": ["fit_model"]}
+```
+read(wait_seconds=30, since=<the timestamp from the record>)
 ```
 
-That is neither an error nor a timeout. The cell is still going, the browser
-already shows it running, and `status` waits for it and says when it
-is done.
+is the follow-up — one call, not a poll loop, returning the same record.
 
 ## The two channels
 
 There are exactly two channels between you and the human: terminal text, and
-notebook edits in either direction. `status` is the second channel's read
-side — it reports which cells a human changed since you last looked, with old
-and new source, so you can answer by editing back.
+notebook edits in either direction. `read(since=…)` is the second channel's read
+side — it reports which cells a human changed since you last looked, with
+`old_code` and `new_code`, so you can answer by editing back.
 
 A prior version of this tool added a third channel — an in-notebook "ask AI"
 inbox — behind a fork of Pluto. That fork is not something anyone can install,
@@ -163,5 +188,18 @@ tool calls.
 
 So a cell that is missing, renamed, or different from what you last wrote is the
 normal outcome of someone else working — not damage. Re-read before acting, and
-never restore a notebook to what a tool remembers. `status` reports human edits
-too, through Pluto's `StateChangeEvent` hook, so noticing them costs no polling.
+never restore a notebook to what a tool remembers. `read(since=…)` reports human
+edits too, through Pluto's `StateChangeEvent` hook, so noticing them costs no
+polling.
+
+## Not a REPL
+
+Julia already has REPL-shaped MCP servers — AgentREPL, MCPRepl, Kaimon — and
+they are good at what they do: evaluate an expression, get a value back.
+
+PlutoMCP is a different niche. The unit of work is a **notebook**, not an
+expression: reactive, reproducible from scratch, self-contained with its own
+package environment, and reviewable by a human while it is being written. The
+human-review channel and the file that reruns from nothing are the point, not
+interactive evaluation. If you want a scratchpad, use a REPL server. If you want
+the finished experiment to still make sense next month, use this.

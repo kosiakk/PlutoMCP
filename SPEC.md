@@ -19,35 +19,53 @@ Cells are pure computation and never control the notebook they live in.
 ## Core principle
 
 **Every capability question has the same answer: the agent writes a cell.**
-Probing a value, reading a docstring, computing statistics, rendering a plot, expanding a table: all of these are cells, usually ephemeral ones.
+Probing a value, reading a docstring, computing statistics, rendering a plot, expanding a table: all of these are cells, usually deleted on success.
 Tools exist only where cells cannot reach: lifecycle, the result record, raw bytes, and human-edit history.
 
-Corollary: no scratchpad or second eval path (probes are visible ephemeral cells), no transactional layer (errored cells with messages ARE the validation, Pluto's reactive engine IS the validator), no in-cell notebook API (cells run in the worker process, control lives in the host, and one writer means clean provenance).
+Corollary: no scratchpad or second eval path (probes are visible cells), no transactional layer (errored cells with messages ARE the validation, Pluto's reactive engine IS the validator), no in-cell notebook API (cells run in the worker process, control lives in the host, and one writer means clean provenance).
 
 ## Tools
 
-Ten: `start, open, list, edit, run, read, output, bond, export, stop`.
+Ten. Signatures are the contract; defaults shown.
 
-- `start` / `stop`: server lifecycle. `stop` sweeps spill files.
-- `open(path=nothing, create=false)`: get a notebook. Pathless create gives an anonymous scratch notebook. New notebooks get the wide-layout cell and the `AsPNG` helper injected.
+```
+start()
+open(path=nothing, create=false, wait_seconds=0)
+list()
+edit(notebook, cell=nothing, code=nothing, mode="replace", wait_seconds=0, delete_on_success=false)
+run(notebook, cells=nothing, wait_seconds=0)
+read(notebook, cells=nothing, tree=false, wait_seconds=0, since=nothing)
+output(notebook, cell)
+bond(notebook, name, value, wait_seconds=0)
+export(notebook, path=nothing)
+stop(notebook=nothing, cell=nothing)
+```
+
+- `start` / `stop`: lifecycle, scope narrowing with each argument. `stop()` stops everything, `stop(notebook)` shuts one notebook down and sweeps its spill files, `stop(notebook, cell)` interrupts that cell's evaluation (the UI stop button).
+- `open`: get a notebook, running it. Pathless create gives an anonymous scratch notebook (Pluto cutename in tempdir); the description tells the agent to name kept work after the experiment. New notebooks get the wide-layout cell; every workspace gets the `AsPNG` helper.
 - `list`: open notebooks and their paths.
-- `edit`: insert, replace, delete cells. `ephemeral=true` inserts, runs unsaved, deletes on clean finish; on error or timeout the cell stays visible for the agent to remove.
-- `run`: run cells. Overlaps `edit` deliberately, mirroring NotebookEdit habits.
-- `read(cells, tree, wait_seconds, since)`: snapshot, dependency tree, wait-for-idle-or-new-error, and changes-since including human edits. The one status/wait/diff tool.
-- `output(cell)`: one cell, complete. Full text, or PNG bytes for binary output. The only tool whose response is not the record.
-- `bond`: set a `@bind` variable.
+- `edit`: `mode` is `replace`, `insert` (after `cell`, or append when `cell=nothing`), or `delete`. Modes share every other argument, which is why one tool holds them. `delete_on_success=true`: the cell runs normally in the workspace, visible in the browser, and is deleted iff `status` is `success` at return time; otherwise it stays and the agent removes it by the returned id. With `wait_seconds=0` the server returns before witnessing success, so the flag never fires. That return-time deletion is its entire contract.
+- `run`: recompute cells (`cells=nothing` means all). Backup path only: `edit` saves and runs, human browser edits run through Pluto's UI, so `run` exists for cells whose non-reactive inputs changed (files on disk, RNG, env). The from-scratch reproducibility check is `stop` + `open`, not `run`.
+- `read`: snapshot, dependency tree (`tree=true`), wait until nothing is `pending`/`calculating` or a new error appears, changes since a timestamp including human edits. The one status/wait/diff tool.
+- `output`: one cell, complete. Full text, or PNG bytes for binary output. The only tool whose response is not the record.
+- `bond`: set a `@bind` variable and report the cascade.
 - `export`: standalone HTML.
 
 New tools must pass two gates: cells cannot do it, and usage logs show the need.
-Never a discriminator-parameter mega-tool (`action=...`): the schema must express what each operation requires.
+Never a discriminator parameter over unrelated operations (`action=...`): `edit`'s modes qualify as one tool only because they share their argument list.
 
 ## One record
 
 Every tool response except `output` bytes, `start` host/secret, and `list` paths parses as the same record:
-`finished, waited_seconds, errored, timestamp, cells`.
+`status, waited_seconds, timestamp, cells`.
 `cells` lists every cell the reactive cascade touched, including clean downstream re-runs.
 
-Each cell entry carries: identity, `code`, rendered output, structured log entries (last 20, overflow counted and spilled), error message if any.
+`status` is one enum at both levels: `pending | calculating | success | error`.
+Cells carry their own; the record aggregates by one rule: any cell `error` means `error`, else any `pending` or `calculating` means `calculating`, else `success`.
+`wait_seconds=0` returns immediately with `status=calculating` and cell ids; completion is observed by the next `read`.
+Polling through the loop is the notification mechanism: no server push.
+
+Each cell entry carries: identity, `status`, `code`, rendered output, structured log entries (last 20, overflow counted and spilled), error message if any.
 
 Output rendering:
 - Text: inline up to 2 KB; larger becomes head 1 KB + tail 1 KB + spill file path.
@@ -57,27 +75,28 @@ Output rendering:
 
 ## One vocabulary
 
-- `wait_seconds` on every running tool; `waited_seconds` its receipt in the record. One semantics: return when finished or when time expires, expired means `finished=false`.
+- `wait_seconds` on every running tool; `waited_seconds` its receipt in the record. One semantics: return on completion, on new error, or on expiry, whichever comes first. Expiry shows as `status=calculating`.
+- `status`: `pending | calculating | success | error`, the only progress vocabulary. No `finished`, no `errored` booleans anywhere.
 - `code` for cell text, everywhere. Human edits report `old_code` / `new_code`.
-- `cell` / `cells` for addressing: name, UUID, or unique prefix, resolved by one shared function.
+- `cell` / `cells` for addressing cells, `notebook` for addressing notebooks: name/path, UUID, or unique prefix, resolved by one shared function.
 - `timestamp` from the record round-trips into `since`. The agent copies, never computes time.
 
 ## One loop
 
 Stated once in the server description, elaborated in the plugin skill:
-edit or run, check `finished`; if false, `read(wait_seconds=N, since=<timestamp>)`, same record.
-Ephemeral cells for anything not worth keeping.
+edit, then check `status`: `success` proceed, `error` read the cells and fix, `calculating` call `read(wait_seconds=N, since=<timestamp>)`, same record.
+`delete_on_success` cells for anything not worth keeping.
 Prefer `@info` with key-value pairs over `println`: structured entries survive truncation individually, print spam loses its middle.
 
 ## Seeing hierarchy
 
 How the agent looks at data, cheapest first:
 1. The tree sketch in the record, for structure.
-2. Ephemeral statistics cells, for numbers: exact answers cost less than reading raw values.
-3. UnicodePlots in an ephemeral cell, for shape: 1-2 KB of text, no image tokens. `histogram` or `BlockCanvas` over the Braille default.
+2. Throwaway statistics cells, for numbers: exact answers cost less than reading raw values.
+3. UnicodePlots in a `delete_on_success` cell, for shape: 1-2 KB of text, no image tokens. `histogram` or `BlockCanvas` over the Braille default.
 4. `AsPNG(fig)` last, when raster truth matters: fine detail, color, verifying what the human sees.
 
-`AsPNG` exists because Pluto's MIME ordering prefers SVG and MCP images are PNG.
+`AsPNG(fig)` is a wrapper whose only `show` method is `image/png`. It must exist: Pluto stores one rendered MIME per cell by its own preference (SVG for Plots, HTML for some backends), `output` never re-executes, so PNG bytes exist only if a cell renders them.
 Format conversions are probe cells calling the plotting library directly.
 
 ## Safety and transport
@@ -89,12 +108,12 @@ Format conversions are probe cells calling the plotting library directly.
 ## Packaging and positioning
 
 - Julia package, MIT licensed, registry-eligible, client-agnostic MCP server underneath.
-- Claude Code plugin on top: auto-configured server plus two skills, `pluto-workflow` (the loop, ephemeral pattern, record semantics) and `pluto-seeing` (the hierarchy with a worked UnicodePlots example serving as readability fixture). No hooks.
+- Claude Code plugin on top: auto-configured server plus two skills, `pluto-workflow` (the loop, the delete_on_success pattern, record semantics) and `pluto-seeing` (the hierarchy with a worked UnicodePlots example serving as readability fixture). No hooks.
 - Niche: existing Julia MCP servers are REPL-shaped scratchpads (AgentREPL, MCPRepl, Kaimon). PlutoMCP is notebook-as-reviewable-artifact. The human-review channel and reproducible file are the point, not interactive evaluation.
 
 ## Design discipline
 
 Simplicity is enforced, not preferred.
-Accepted imperfections stay accepted: an errored ephemeral cell may transiently reach the file until the next save; no exclusion logic hides it, because it is visible and the agent cleans it up.
+Accepted imperfections stay accepted: a failed `delete_on_success` cell reaches the file until the agent removes it; no hiding logic, because it is visible and the agent cleans it up.
 Every future addition needs evidence from usage logs, not symmetry, completeness, or anticipation.
 When a capability seems missing, the first question is always: is it a cell?

@@ -16,7 +16,8 @@ Do not add tools, parameters, or state beyond what is written here.
 
 These words appear in schemas, records, and docs. No synonyms, no abbreviations, no second spelling anywhere.
 
-- `wait_seconds`: parameter on every tool that runs or waits (`run`, `edit`, `read`, `bond`, `open`). Semantics, stated once in the server description: return the record when execution finishes or when `wait_seconds` expires, whichever comes first. Expired means `finished=false`. Replaces `block`, the `run_with_deadline` deadline, and any per-tool timeout. It is the same value flowing to the same internal function.
+- `wait_seconds`: parameter on every tool that runs or waits (`run`, `edit`, `read`, `bond`, `open`). Semantics, stated once in the server description: return the record on completion, on new error, or on expiry, whichever comes first. Replaces `block`, the `run_with_deadline` deadline, and any per-tool timeout. It is the same value flowing to the same internal function.
+- `status`: one enum, `pending | calculating | success | error`, at both cell and record level. Replaces the `finished` and `errored` booleans everywhere. Record aggregation rule: any cell `error` means `error`, else any `pending`/`calculating` means `calculating`, else `success`. `wait_seconds=0` returns `status=calculating` with cell ids; no server push notifications, the next `read` observes completion.
 - `waited_seconds`: record field, the receipt for `wait_seconds`. Renames `waited_s`.
 - `code`: the text of a cell. Matches Pluto internals. Never `source`. CHANGES entries use `old_code`/`new_code`.
 - `cell` / `cells`: the only parameter names for addressing cells. Accepted forms, defined once: cell name, UUID, or unique prefix of either. Identical resolution logic in every tool.
@@ -25,7 +26,7 @@ These words appear in schemas, records, and docs. No synonyms, no abbreviations,
 
 ## 1. One result record
 
-`_run_result` becomes the universal response shape: `finished, waited_seconds, errored, timestamp, cells`.
+`_run_result` becomes the universal response shape: `status, waited_seconds, timestamp, cells`.
 `cells` entries are `cell_info` records.
 Emitted by `run`, `edit`, `open`, `read`, `bond`.
 
@@ -44,7 +45,7 @@ Tree/table MIMEs (`application/vnd.pluto.tree+object` and friends) are Dicts tod
 - Structs and heterogeneous tuples: one level of fields. Field name, type, scalar values inline, nested containers as their one-line sketch. No recursion.
 
 Do not replicate Pluto's WS expand-rows protocol.
-The agent's "expand" is an ephemeral cell: `x[4090:4110]`, `describe(df)`, `quantile(x, [0.01, 0.5, 0.99])`.
+The agent's "expand" is a throwaway cell: `x[4090:4110]`, `describe(df)`, `quantile(x, [0.01, 0.5, 0.99])`.
 
 ## 4. Merge `create` into `open`
 
@@ -63,22 +64,22 @@ Signature: `read(cells=nothing, tree=false, wait_seconds=0, since=nothing)`.
 - No arguments: instant snapshot of all cells.
 - `cells`: subset by the standard selector (item 0).
 - `tree=true`: add `references` (PlutoRunner internals filtered) plus `upstream`/`downstream` by cell name from `nb.topology`.
-- `wait_seconds>0`: wait for idle or new error, whichever comes first. "New error" means: a cell errored that was not errored at call time, or whose error message changed. Reuse the existing early-return logic from `run_with_deadline`. Do not reimplement.
+- `wait_seconds>0`: wait until no cell is `pending` or `calculating`, or until a new error, whichever comes first. "New error" means: a cell in `status=error` that was not at call time, or whose error message changed. Reuse the existing early-return logic from `run_with_deadline`. Do not reimplement.
 - `since`: only cells changed after that timestamp. Human edits included with `old_code`/`new_code`, from the existing CHANGES log.
 
 Delete the `status` tool.
 There is no `full` parameter. Full text for one cell is `output`'s job (item 7).
 
-## 6. `edit` gains `ephemeral` (default false, insert only)
+## 6. `edit` gains `delete_on_success` (default false, insert only)
 
-Runs with `save=false` so the file never sees the cell.
-Clean finish within `wait_seconds`: capture the record, delete the cell, return.
-Errored or timed out: the cell stays in the notebook, visible in the browser, record says so, agent deletes it later with an ordinary `edit` delete.
+The cell is given to Pluto normally: it runs in the workspace and is visible in the browser.
+If `status` is `success` at return time: capture the record, delete the cell, return. That return-time deletion is the entire contract, hence the name. With `wait_seconds=0` the flag never fires and the agent deletes by the returned id.
+Errored or timed out: the cell stays, record says so, agent deletes it later with an ordinary `edit` delete.
+Skipping the intermediate file write (`save=false`) is an implementation detail for code comments, not part of the contract.
 
-Known and accepted: an errored ephemeral cell that survives until the next save-bearing operation gets written to the file transiently.
-Do NOT add exclusion logic to `save_notebook` to prevent this.
-The cell is visible, the agent removes it, the next save cleans the file.
-Document this in the tool description as intended behavior.
+Known and accepted: a failed cell reaches the file until the agent removes it.
+Do NOT add exclusion logic to `save_notebook`.
+The cell is visible, the agent cleans it up.
 
 No stored state, no sweeper, no new lifecycle.
 
@@ -86,7 +87,7 @@ No stored state, no sweeper, no new lifecycle.
 
 Replacements, for the tool descriptions and skill doc:
 
-- Probing and docstrings: ephemeral cells. `@doc special_func` for exactly the names the agent is unsure of. The agent's own uncertainty selects them, which no tool schema can know.
+- Probing and docstrings: throwaway cells (`delete_on_success`). `@doc special_func` for exactly the names the agent is unsure of. The agent's own uncertainty selects them, which no tool schema can know.
 - Dependencies: `read(tree=true)`.
 - Waiting: `read(wait_seconds=N)`.
 - PNG: item 9.
@@ -118,7 +119,7 @@ Swept on `stop`.
 Inject `PlutoMCP.AsPNG(fig)` into each workspace on `open`.
 Wrapper type whose only `show` method is `image/png`: Plots via savefig-to-buffer, Makie native.
 Reason it must exist: Pluto's MIME ordering prefers SVG when a backend offers both, and MCP images are PNG.
-Rendering is then an ephemeral cell `AsPNG(myplot)` and bytes flow through the existing image branch and item 8.
+Rendering is then a throwaway cell `AsPNG(myplot)` and bytes flow through the existing image branch and item 8.
 Delete the old `png` tool's insert-run-delete machinery.
 
 ## 11. Structured logs, capped
@@ -139,7 +140,7 @@ Worker (cell) output is already safe: Malt keeps worker streams on private pipes
 
 The server-level description states the loop once, not per tool:
 
-> Edit or run, check `finished`. If false: `read(wait_seconds=N, since=<timestamp from the record>)`, same record. Use `ephemeral` for anything not worth keeping. Prefer `@info` with key-value pairs over `println`: structured entries survive truncation individually.
+> Edit, then check `status`: `success` proceed, `error` read the cells and fix, `calculating` call `read(wait_seconds=N, since=<timestamp from the record>)`, same record. Use `delete_on_success` for anything not worth keeping. Prefer `@info` with key-value pairs over `println`: structured entries survive truncation individually.
 
 Per-tool descriptions shrink to schema plus one sentence.
 Workflow doctrine moves to the skill (item 14).
@@ -148,13 +149,27 @@ Workflow doctrine moves to the skill (item 14).
 
 Add `.claude-plugin/`: manifest with the MCP server config (auto-setup via `claude /plugin add kosiakk/PlutoMCP`), plus two skills.
 
-- `pluto-workflow`: the loop, the ephemeral pattern, record semantics, the errored-ephemeral cleanup convention.
-- `pluto-seeing`: the seeing hierarchy — tree sketch for structure, ephemeral statistics for numbers, UnicodePlots in an ephemeral cell for shape, `AsPNG` last when raster truth matters. Include a worked UnicodePlots example: an actual `histogram` output with the correct verbal reading of it. Recommend `histogram` or `canvas=BlockCanvas` over the Braille default. This doubles as the readability test fixture.
+- `pluto-workflow`: the loop, the delete_on_success pattern, record semantics, the failed-probe cleanup convention.
+- `pluto-seeing`: the seeing hierarchy — tree sketch for structure, throwaway statistics for numbers, UnicodePlots in a throwaway cell for shape, `AsPNG` last when raster truth matters. Include a worked UnicodePlots example: an actual `histogram` output with the correct verbal reading of it. Recommend `histogram` or `canvas=BlockCanvas` over the Braille default. This doubles as the readability test fixture.
 
 The MCP server stays standalone and client-agnostic. The plugin is packaging, not a dependency.
 No hooks. Revisit after a month of usage logs.
 
-## 15. Cleanup
+## 15. `stop` narrows by argument
+
+`stop(notebook=nothing, cell=nothing)`.
+No arguments: stop everything.
+`notebook`: shut that notebook down, sweep its spill files.
+`notebook` and `cell`: interrupt that cell's evaluation, the equivalent of the UI stop button.
+Cells cannot interrupt themselves, so this is legitimate tool territory.
+
+## 16. `run` is the backup path
+
+`edit` saves and runs. Human browser edits run through Pluto's own UI.
+`run` remains only for recomputing cells whose non-reactive inputs changed: files on disk, RNG, environment.
+Its description says so. The from-scratch reproducibility check is `stop` + `open`, not `run`.
+
+## 17. Cleanup
 
 - License: GPL-3 → MIT. Blocks upstreaming and registry eligibility otherwise.
 - Remove the `questions` tool and the `attach_assistant!` fork path. The `kosiakk/Pluto.jl` branch is dead code. Remove the README link.
@@ -166,7 +181,7 @@ No hooks. Revisit after a month of usage logs.
 - MCP resources (notebook list, cell snapshot as @-mentions): file an issue, do not build.
 - Any paging, offset, or byte-range parameters anywhere.
 - Any transactional/validation layer. Errored cells with messages ARE the validation.
-- Any scratchpad or second eval path. Probes are visible ephemeral cells by design.
+- Any scratchpad or second eval path. Probes are visible cells by design.
 - A `move`/save-as tool: file an issue. Live-notebook relocation needs `SessionActions.move`, but the authoring workflow knows paths upfront. Build it when usage logs show anonymous notebooks graduating.
 - Wrapping more of Pluto's native session API. Each operation earns a lifecycle tool through usage logs, never through completeness.
 - Any in-cell notebook-control mechanism (`@notebook` macro or similar). Cells run in the worker process, the session API lives in the host: this would be a second RPC control path, and it makes cells writers of their own notebook. The agent is the only writer, cells are pure computation.
