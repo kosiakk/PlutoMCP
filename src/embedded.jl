@@ -24,50 +24,60 @@ attached.
 # session name => the server, the Pluto session, and the notebook it is driving
 const SESSIONS = Dict{String,Any}()
 
-# session name => log of cell-level edits seen via StateChangeEvent, oldest
-# first. A DROPPING buffer: a notification path must never be able to block
-# the thing it observes.
-const CHANGES = Dict{String,Vector{NamedTuple}}()
+# (session name, notebook_id) => log of cell-level edits seen via
+# StateChangeEvent, oldest first. A DROPPING buffer: a notification path must
+# never be able to block the thing it observes. Keyed per notebook, not just
+# per session -- a session can have several open (see `list`), and a shared
+# per-session log would misattribute every OTHER notebook's untouched cells as
+# newly deleted the moment any one of them changed (they'd be absent from
+# that event's `nb.cells`, which is exactly what "deleted" used to mean).
+const CHANGES = Dict{Tuple{String,Base.UUID},Vector{NamedTuple}}()
 const CHANGES_MAX = 256
 
-# session name => cell_id => code, as of the last StateChangeEvent. Lets the
-# event hook tell an edit apart from a mere state transition (queued/running),
-# and reconstructs old/new source for the diff `status` reports.
-const SNAPSHOTS = Dict{String,Dict{Base.UUID,String}}()
+# (session name, notebook_id) => cell_id => code, as of the last
+# StateChangeEvent. Lets the event hook tell an edit apart from a mere state
+# transition (queued/running), and reconstructs old/new source for the diff
+# `status` reports. Same per-notebook keying as CHANGES, for the same reason.
+const SNAPSHOTS = Dict{Tuple{String,Base.UUID},Dict{Base.UUID,String}}()
 
 """
-    _mark_seen!(name, cell_id, code)
+    _mark_seen!(name, notebook_id, cell_id, code)
 
 Record `code` as already-known for `cell_id` before running it, so the
 StateChangeEvent that follows does not report our own edit back to us as a
 change. `status` exists to tell the agent what a HUMAN did while it was not
 looking; an edit the agent just made through these tools is not that.
 """
-function _mark_seen!(name::AbstractString, cell_id, code::AbstractString)
-    snap = get!(SNAPSHOTS, String(name), Dict{Base.UUID,String}())
+function _mark_seen!(name::AbstractString, notebook_id::Base.UUID, cell_id, code::AbstractString)
+    snap = get!(SNAPSHOTS, (String(name), notebook_id), Dict{Base.UUID,String}())
     snap[cell_id] = code
     return nothing
 end
 
 "Drop a cell from the snapshot, so its removal is not reported as a deletion."
-function _forget_seen!(name::AbstractString, cell_id)
-    haskey(SNAPSHOTS, String(name)) && delete!(SNAPSHOTS[String(name)], cell_id)
+function _forget_seen!(name::AbstractString, notebook_id::Base.UUID, cell_id)
+    key = (String(name), notebook_id)
+    haskey(SNAPSHOTS, key) && delete!(SNAPSHOTS[key], cell_id)
     return nothing
 end
 
 """
     _note_change!(name, nb)
 
-Diff `nb` against the last-seen snapshot for this session and append one entry
-per inserted, edited or deleted cell to `CHANGES`. Runs on every
-`StateChangeEvent`. A tool-initiated edit already updated the snapshot via
-`_mark_seen!` before running, so it diffs to nothing here -- what is left is
-what a human changed in the browser while nobody was looking.
+Diff `nb` against the last-seen snapshot for this (session, notebook) and
+append one entry per inserted, edited or deleted cell to `CHANGES`. Runs on
+every `StateChangeEvent`, for whichever notebook it fired on -- keyed by
+notebook_id, not just session, so a change in one open notebook cannot appear
+as every OTHER open notebook's cells having just been deleted. A
+tool-initiated edit already updated the snapshot via `_mark_seen!` before
+running, so it diffs to nothing here -- what is left is what a human changed
+in the browser while nobody was looking.
 """
 function _note_change!(name::String, nb::Pluto.Notebook)
     t = time()
-    snap = get!(SNAPSHOTS, name, Dict{Base.UUID,String}())
-    log = get!(CHANGES, name, NamedTuple[])
+    key = (name, nb.notebook_id)
+    snap = get!(SNAPSHOTS, key, Dict{Base.UUID,String}())
+    log = get!(CHANGES, key, NamedTuple[])
     labels = cell_labels(nb)
     seen = Set{Base.UUID}()
     for c in nb.cells
@@ -150,8 +160,15 @@ function stop_session(name::AbstractString)
     end
     close(s.server)
     delete!(SESSIONS, String(name))
-    delete!(CHANGES, String(name))
-    delete!(SNAPSHOTS, String(name))
+    # Keyed by (session, notebook_id), so this session's entries aren't one
+    # key -- drop everything whose first component matches.
+    nm = String(name)
+    for k in collect(keys(CHANGES))
+        first(k) == nm && delete!(CHANGES, k)
+    end
+    for k in collect(keys(SNAPSHOTS))
+        first(k) == nm && delete!(SNAPSHOTS, k)
+    end
     return nothing
 end
 

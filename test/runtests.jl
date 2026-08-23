@@ -546,6 +546,36 @@ end
     id_by_path = only(x for x in ls if x.path == first_path).notebook_id
     @test call("output", Dict("session" => S, "cell_id" => "doubled",
                               "notebook" => String(id_by_path))).body == "42"
+
+    # Regression: CHANGES/SNAPSHOTS used to be keyed by session name alone, so
+    # a StateChangeEvent on THIS (second) notebook would see the first
+    # notebook's cells as absent from `nb.cells` and log them as "deleted" --
+    # and then genuinely evict them from the snapshot, so the first
+    # notebook's NEXT real edit would misreport as "inserted" instead of
+    # "edited". Editing the second notebook must not touch the first's status
+    # at all.
+    s_first_before = call("status", Dict("session" => S, "notebook" => first_path))
+    call("edit", Dict("session" => S, "notebook" => second_path,
+                      "cell_id" => "z", "new_source" => "z = 200", "block" => 60))
+    s_first_after = call("status", Dict("session" => S, "notebook" => first_path,
+                                        "since" => s_first_before.now))
+    @test isempty(s_first_after.changes)
+
+    # And the first notebook's OWN change history survived intact -- a human
+    # edit on it would still show up correctly on the next call. (first_path
+    # is whatever was S's current notebook before this testset -- the "open an
+    # existing notebook" testset's q/doubled notebook, not the original.)
+    nb1 = P._notebook(S; ref=first_path)
+    cell = P.resolve_cell(nb1, "q")
+    cell.code = "q = 99"
+    Pluto.update_save_run!(P._session(S).session, nb1, Pluto.Cell[cell]; run_async=false)
+    s_first_final = call("status", Dict("session" => S, "notebook" => first_path,
+                                        "since" => s_first_after.now))
+    @test length(s_first_final.changes) == 1
+    @test s_first_final.changes[1].kind == "edited"
+    @test s_first_final.changes[1].name == "q"
+    cell.code = "q = 21"      # restore, tidiness
+    Pluto.update_save_run!(P._session(S).session, nb1, Pluto.Cell[cell]; run_async=false)
 end
 
 @testset "a missing required argument errors instead of crashing" begin

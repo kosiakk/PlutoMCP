@@ -86,7 +86,7 @@ pluto_open = MCPTool(
         nb = Pluto.SessionActions.open(s.session, args["path"]; run_async = !get(args, "run", true))
         s.current[] = nb.notebook_id
         for c in nb.cells
-            _mark_seen!(name, c.cell_id, c.code)
+            _mark_seen!(name, nb.notebook_id, c.cell_id, c.code)
         end
         _ok((url=notebook_url(s, nb), path=nb.path, cells=cells_info(nb)))
     end),
@@ -140,7 +140,7 @@ The first cell is always a `<style>` widening the page: Pluto's fixed-width colu
         nb === nothing && fetch(task)
         s.current[] = nb.notebook_id
         for c in nb.cells
-            _mark_seen!(name, c.cell_id, c.code)
+            _mark_seen!(name, nb.notebook_id, c.cell_id, c.code)
         end
         while !istaskdone(task) && time() - t0 < _block(args)
             sleep(0.02)
@@ -211,7 +211,7 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
                 deleteat!(nb.cell_order, findfirst(==(c.cell_id), nb.cell_order))
                 delete!(nb.cells_dict, c.cell_id)
             end
-            _forget_seen!(name, c.cell_id)
+            _forget_seen!(name, nb.notebook_id, c.cell_id)
             # Hand the removed cell to the run: the topology then sees it defines
             # nothing, so its globals are released and dependents re-run.
             Pluto.update_save_run!(s.session, nb, Pluto.Cell[c]; run_async=false)
@@ -227,13 +227,13 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
                 insert!(nb.cell_order, at + 1, c.cell_id)
                 nb.cells_dict[c.cell_id] = c
             end
-            _mark_seen!(name, c.cell_id, code)
+            _mark_seen!(name, nb.notebook_id, c.cell_id, code)
             finished, waited = run_with_deadline(name, nb, Pluto.Cell[c]; block=_block(args))
             _ok(_run_result(nb, [c], finished, waited))
         else
             c = resolve_cell(nb, ref)
             c.code = code
-            _mark_seen!(name, c.cell_id, code)
+            _mark_seen!(name, nb.notebook_id, c.cell_id, code)
             finished, waited = run_with_deadline(name, nb, Pluto.Cell[c]; block=_block(args))
             _ok(_run_result(nb, [c], finished, waited))
         end
@@ -283,7 +283,7 @@ Waits up to `block` seconds for the notebook to go idle, so following up a run t
               !any(c -> c.errored && !(c.cell_id in errored_before), nb.cells)
             sleep(0.05)
         end
-        log = get(CHANGES, String(name), NamedTuple[])
+        log = get(CHANGES, (String(name), nb.notebook_id), NamedTuple[])
         since = haskey(args, "since") && args["since"] !== nothing ? Float64(args["since"]) : -Inf
         labels = cell_labels(nb)
         busy = busy_cells(nb)
@@ -423,7 +423,7 @@ end""")
                 i === nothing || deleteat!(nb.cell_order, i)
                 delete!(nb.cells_dict, probe.cell_id)
             end
-            _forget_seen!(name, probe.cell_id)
+            _forget_seen!(name, nb.notebook_id, probe.cell_id)
             Pluto.update_save_run!(s.session, nb, Pluto.Cell[probe]; run_async=false, save=false)
             rm(tmp; force=true)
         end
