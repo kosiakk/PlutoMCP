@@ -695,6 +695,16 @@ end
     Pluto.update_save_run!(P._session(S).session, nb2, Pluto.Cell[doomed]; run_async=false)
     named = call("read", Dict("session" => S, "cells" => ["a"]))
     @test only(named.cells).name == "a"
+
+    # A bare read DOES report the deletion, old_code and all -- once. The
+    # CHANGES log keeps the entry for `since` arithmetic, but the reference
+    # point is the agent's context: a second bare read repeating a cell that is
+    # no longer in the notebook would be noise, not news.
+    gone = call("read", Dict("session" => S))
+    @test any(c -> get(c, :change, nothing) == "deleted" &&
+                   get(c, :old_code, "") == "doomed = 1", gone.cells)
+    again = call("read", Dict("session" => S))
+    @test !any(c -> get(c, :change, nothing) == "deleted", again.cells)
 end
 
 @testset "reads reflect the live notebook" begin

@@ -481,6 +481,16 @@ function record(name::AbstractString, nb::Pluto.Notebook, cells, finished::Bool,
     statuses = String[]
     for c in cells
         if !(c isa Pluto.Cell)          # a synthetic entry: a deleted cell
+            # Deduped like any real cell: a deletion is news exactly once. The
+            # CHANGES log keeps the entry for `since` arithmetic, but a bare
+            # read that already delivered it must not repeat it -- and there is
+            # no compact form to fall back to, because the cell is no longer in
+            # the notebook and a summary line would claim it is.
+            id = tryparse(Base.UUID, String(get(c, :cell_id, "")))
+            fingerprint = hash(c)
+            previous = id === nothing ? nothing : get(seen, id, nothing)
+            previous !== nothing && first(previous) == fingerprint && continue
+            id === nothing || (seen[id] = (fingerprint, timestamp))
             push!(entries, c)
             push!(statuses, get(c, :status, "success"))
             continue
