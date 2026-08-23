@@ -320,14 +320,43 @@ function cell_fingerprint(c::Pluto.Cell)
     h
 end
 
+# ------------------------------------------------------------------ html text --
+
+"""
+    html_text(html) -> String
+
+The text content of an HTML body, for the record's sketch of it.
+
+Markup is presentation, and presentation is for the browser the human is
+already watching: a markdown cell's `<div class="markdown"><h1 id=…>` wrapping
+says nothing its `code` does not, a widget's `<input>` says nothing at all, and
+either one is paid for by the token. What the text DOES carry that the code
+cannot is interpolated values — `md"the mean was \$(m)"` renders a number the
+source only names. So: scripts, styles and comments are dropped whole, block
+boundaries become newlines, tags go, entities decode, whitespace collapses.
+The full markup stays one `output` call away.
+"""
+function html_text(html::AbstractString)
+    t = replace(html, r"(?is)<(script|style)\b.*?</\1\s*>" => " ")
+    t = replace(t, r"(?s)<!--.*?-->" => " ")
+    t = replace(t, r"(?i)</(p|div|li|tr|h[1-6]|blockquote|pre|table|ul|ol)\s*>" => "\n",
+                r"(?i)</t[dh]\s*>" => " ", r"(?i)<br\s*/?>" => "\n")
+    t = replace(t, r"<[^>]*>" => "")
+    t = replace(t, "&lt;" => "<", "&gt;" => ">", "&quot;" => "\"",
+                "&#39;" => "'", "&nbsp;" => " ", "&amp;" => "&")
+    t = replace(t, r"[ \t]+" => " ")
+    String(strip(replace(t, r" ?\n[ \n]*" => "\n")))
+end
+
 # --------------------------------------------------------------- cell output --
 
 """
     render_output(nb, c, label) -> NamedTuple
 
 The rendered-output half of a cell record: `mime` always, plus `output` for
-anything textual, `bytes` for binary (fetch it with the `output` tool), and
-`error` for a cell that failed.
+anything textual (HTML arrives as its extracted text), and `error` for a cell
+that failed. Binary is `mime` alone — the `output` tool returns the picture
+itself, as MCP image content, and nothing about bytes belongs in a record.
 
 Errors are pulled apart rather than stringified: Pluto already hands back a
 structured parse error or stack trace, and flattening it into a blob only makes
@@ -344,8 +373,15 @@ function render_output(nb::Pluto.Notebook, c::Pluto.Cell, label::AbstractString)
         return (mime = mime, error = short(_stacktrace_text(body)))
     elseif body isa AbstractDict
         return (mime = mime, output = short(sketch(body)))
+    elseif mime == "text/html" && body isa AbstractString
+        # The record sketches HTML as its text, the way it sketches a container
+        # as one line: content, not markup. `output` returns the markup whole.
+        return (mime = mime, output = short(html_text(body)))
     elseif body isa Vector{UInt8}
-        return (mime = mime, bytes = length(body))
+        # The mime is the whole signal: the picture itself is one `output` call
+        # away, as real MCP image content. A byte count is a number nobody can
+        # look at.
+        return (mime = mime,)
     elseif body === nothing
         return (mime = mime, output = "")
     end

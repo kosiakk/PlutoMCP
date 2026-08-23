@@ -539,10 +539,6 @@ function _render_png(session_name, nb::Pluto.Notebook, label::AbstractString)
     end
 end
 
-_body_bytes(b::Vector{UInt8}) = length(b)
-_body_bytes(b::AbstractString) = sizeof(b)
-_body_bytes(b) = sizeof(string(b))
-
 pluto_output = MCPTool(
     name="output",
     description="One cell's output, complete: the full text where the record only had a sketch, or the picture when the cell's value is a figure — including one Pluto stored as SVG, which is asked for a PNG rather than handed over as markup. Oversize output spills to a file and the path is returned — read or grep it directly.",
@@ -566,7 +562,7 @@ pluto_output = MCPTool(
                 dir = spill_dir(nb); mkpath(dir)
                 path = joinpath(dir, "$(_slug(label))-output." * last(split(mime, "/")))
                 write(path, body)
-                return _ok((cell=label, mime=mime, bytes=length(body), path=path))
+                return _ok((cell=label, mime=mime, path=path))
             end
             return ImageContent(data=body, mime_type=mime)
         end
@@ -578,7 +574,7 @@ pluto_output = MCPTool(
         if startswith(mime, "image/")
             png = _render_png(_sess(args), nb, label)
             png === nothing || return ImageContent(data=png, mime_type="image/png")
-            return _ok((cell=label, mime=mime, bytes=_body_bytes(body),
+            return _ok((cell=label, mime=mime,
                         hint="This is $(mime) — markup, not a raster image, and not " *
                              "worth reading. Rendering it as PNG failed or the notebook " *
                              "was busy; `PlutoMCP.AsPNG($label)` in a delete_on_success " *

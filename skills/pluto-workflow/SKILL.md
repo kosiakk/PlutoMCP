@@ -138,6 +138,9 @@ differ deeper in. When that matters, a probe cell answers it — `hash(x)`,
 
 - Output is a **sketch**, one line: `Vector{Float64}, ≥30 elements: [0.12, …]`.
   For the full text of one cell, call `output(cell=...)`.
+- HTML output — a markdown cell's rendering, a widget — arrives as its text
+  content, tags stripped; `output(cell=...)` returns the markup itself if you
+  ever need it. An image is `mime` alone: `output` returns the picture.
 - Text over 2 KB spills to a file and the payload names the path. Read or grep
   that file directly — it is on the same machine.
 - `read(tree=true)` gives each cell's `references` and its `upstream` /

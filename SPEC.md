@@ -80,7 +80,8 @@ Output rendering:
 - Text: inline up to 2 KB; larger becomes head 1 KB + tail 1 KB + spill file path.
 - Homogeneous containers: Pluto's one-line sketch (length, eltype, head … tail). No expansion protocol; the agent's expand is a probe cell.
 - Structs and heterogeneous tuples: one level of fields, no recursion.
-- Binary: MIME and size, bytes via `output`.
+- HTML (a markdown cell's rendering included): the text content, tags stripped. Markup is presentation for the browser the human is watching; what the text alone carries is interpolated values. Full markup via `output`.
+- Binary: MIME alone. The picture itself comes from `output`, as MCP image content; a byte count is a number nobody can look at, and nothing heavy or useless rides in the record.
 
 ## One vocabulary
 

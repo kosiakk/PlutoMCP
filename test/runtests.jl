@@ -192,6 +192,17 @@ end
     @test P.sketch(Dict{Symbol,Any}(:type => :SomethingNew)) == "<SomethingNew>"
 end
 
+@testset "html_text: content, not markup" begin
+    @test P.html_text("<div class=\"markdown\"><h1>Hi</h1>\n<p>a <strong>b</strong> c</p>\n</div>") ==
+          "Hi\na b c"
+    @test P.html_text("<script>alert(1)</script><style>p{color:red}</style>ok") == "ok"
+    @test P.html_text("<table><tr><td>a</td><td>1</td></tr><tr><td>b</td><td>2</td></tr></table>") ==
+          "a 1\nb 2"
+    @test P.html_text("<input type=range>") == ""              # a widget says nothing
+    @test P.html_text("2 &lt; 3 &amp;&amp; x") == "2 < 3 && x"
+    @test P.html_text("&amp;lt; stays literal") == "&lt; stays literal"
+end
+
 @testset "the vocabulary has no synonyms" begin
     # Item 0 of the round-2 spec, enforced rather than remembered. `block`,
     # `new_source`, `cell_id` and `source` are the words this surface used to
@@ -743,6 +754,34 @@ end
 
 end
 
+@testset "html arrives as text, not markup" begin
+    # A markdown cell renders to text/html. The record's job is the CONTENT --
+    # the agent already holds the md source as `code`, and the one thing the
+    # rendering adds is interpolated values. Tag soup is for the browser.
+    r = call("edit", Dict("session" => S, "mode" => "insert", "cell_type" => "markdown",
+                          "code" => "# Findings\n\nThe **mean** over \$(2+3) runs was significant.",
+                          "wait_seconds" => 60))
+    c = only(r.cells)
+    @test c.mime == "text/html"
+    @test !occursin("<", c.output)               # no markup in the record
+    @test occursin("Findings", c.output)
+    @test occursin("5", c.output)                # interpolated VALUES survive
+    full = call("output", Dict("session" => S, "cell" => String(c.cell_id)))
+    @test occursin("<h1", full.output)           # the whole markup, on request
+
+    w = call("edit", Dict("session" => S, "mode" => "insert",
+                          "code" => "html\"<table><tr><td>a</td><td>1</td></tr></table>\"",
+                          "wait_seconds" => 60))
+    cw = only(w.cells)
+    @test !occursin("<td>", cw.output)
+    @test occursin("a 1", cw.output)
+
+    for id in (c.cell_id, cw.cell_id)
+        call("edit", Dict("session" => S, "cell" => String(id), "mode" => "delete",
+                          "wait_seconds" => 60))
+    end
+end
+
 @testset "output: one cell, complete" begin
     r = call("output", Dict("session" => S, "cell" => "total"))
     @test r.cell == "total"
@@ -871,7 +910,7 @@ end
     # the hint is what is left -- naming the cell, so it can be run as printed.
     r = call("output", Dict("session" => S, "cell" => "svgfig"))
     @test !occursin("<path", string(r))          # not one screenful of it, either
-    @test r.mime == "image/svg+xml" && r.bytes > 1000
+    @test r.mime == "image/svg+xml"
     @test occursin("AsPNG(svgfig)", r.hint)
 
     # The method cell defines no global, so it is addressed by id -- and it goes
