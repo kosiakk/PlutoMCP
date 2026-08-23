@@ -123,6 +123,8 @@ const S = "test"
     # Tools must refuse clearly before a notebook exists, rather than throwing.
     @test call("read", Dict("session" => S)).error
     @test occursin("no session", call("read", Dict("session" => "absent")).message)
+
+    @test isempty(call("list", Dict("session" => S)))   # nothing open yet
 end
 
 @testset "start twice under the same name doesn't leak the first server" begin
