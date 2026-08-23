@@ -32,7 +32,7 @@ Ten. Signatures are the contract; defaults shown.
 start()
 open(path=nothing, create=false, wait_seconds=0.1)
 list()
-edit(notebook, cell=nothing, code=nothing, mode="replace", wait_seconds=0.1, delete_on_success=false)
+edit(notebook, cell=nothing, code=nothing, mode="replace", cell_type="code", wait_seconds=0.1, delete_on_success=false)
 run(notebook, cells=nothing, wait_seconds=0.1)
 read(notebook, cells=nothing, tree=false, wait_seconds=0.1, since=nothing)
 output(notebook, cell)
@@ -73,7 +73,8 @@ Cells carry their own; the record aggregates by one rule: any cell `error` means
 `wait_seconds=0` returns immediately with `status=calculating` and cell ids; completion is observed by the next `read`.
 Polling through the loop is the notification mechanism: no server push.
 
-Each cell entry carries: identity, `status`, `code`, rendered output, structured log entries (last 20, overflow counted and spilled), error message if any.
+Each cell entry carries: identity, `status`, `code`, runtime, rendered output, structured log entries (last 20, overflow counted and spilled), error message if any.
+A cell the human deleted is synthesised into the record — `change="deleted"`, `old_code` — since there is no live cell left to render it from. It is deduped like any other entry, so a deletion is news exactly once; it never lands on a targeted read, which answers only for the cells it was asked about.
 
 Output rendering:
 - Text: inline up to 2 KB; larger becomes head 1 KB + tail 1 KB + spill file path.

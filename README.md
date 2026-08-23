@@ -125,7 +125,7 @@ bytes, and human-edit history.
 | `open` | get a notebook: open a `.jl` file, or `create=true` for a new one |
 | `list` | every notebook this session has open, and which is current |
 | `edit` | insert / replace / delete a cell, save, and run it |
-| `run` | recompute cells whose non-reactive inputs changed |
+| `run` | recompute cells whose non-reactive inputs changed (a file, an RNG) — the backup path; `edit` already saves and runs |
 | `read` | cells as they are now: snapshot, dependency tree, wait, changes-since |
 | `output` | one cell's output, complete |
 | `bond` | set an `@bind`-ed variable's value, like moving its widget |
@@ -185,10 +185,10 @@ Two rules hold this together:
 ## Long-running cells
 
 Everything that runs takes `wait_seconds` (default 0.1, and `0` to fire and
-forget). The call returns on
-completion, on a new error, or on expiry — whichever comes first. Expiry shows
-as `status: "calculating"`, which is neither an error nor a timeout: the cell is
-still going, the browser already shows it running, and
+forget). The call returns on completion, on a new error, or on expiry —
+whichever comes first. Expiry shows as `status: "calculating"`, which is
+neither an error nor a timeout: the cell is still going, the browser already
+shows it running, and
 
 ```
 read(wait_seconds=30, since=<the timestamp from the record>)
@@ -228,5 +228,7 @@ PlutoMCP is a different niche. The unit of work is a **notebook**, not an
 expression: reactive, reproducible from scratch, self-contained with its own
 package environment, and reviewable by a human while it is being written. The
 human-review channel and the file that reruns from nothing are the point, not
-interactive evaluation. If you want a scratchpad, use a REPL server. If you want
-the finished experiment to still make sense next month, use this.
+interactive evaluation — and `export` seals the result as one self-contained
+HTML file, committed beside the `.jl` as the provenance record. If you want a
+scratchpad, use a REPL server. If you want the finished experiment to still
+make sense next month, use this.

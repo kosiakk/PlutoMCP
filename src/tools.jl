@@ -275,7 +275,7 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
         ToolParameter(name="cell", type="string", description="Target cell. $CELL_REF_DOC For insert, the cell to insert AFTER; omit to append at the end.", required=false),
         ToolParameter(name="code", type="string", description="New cell text (ignored for mode=delete)", required=false),
         ToolParameter(name="mode", type="string", description="\"replace\", \"insert\" or \"delete\"", required=false, default="replace"),
-        ToolParameter(name="cell_type", type="string", description="\"code\" or \"markdown\" (markdown wraps the text in md\"\"\")", required=false, default="code"),
+        ToolParameter(name="cell_type", type="string", description="\"code\" or \"markdown\" (markdown wraps the text in md\"\"\" — note that \$ still interpolates inside it, so escape a literal dollar as \\\$)", required=false, default="code"),
         ToolParameter(name="delete_on_success", type="boolean", description="Delete the cell again if it reaches status=\"success\" before this call returns (default false; insert only)", required=false, default=false),
         wait_param(),
         NOTEBOOK_PARAM,
