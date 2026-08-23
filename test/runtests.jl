@@ -201,6 +201,27 @@ end
     call("edit", Dict("session" => S, "cell_id" => "loud", "edit_mode" => "delete"))
 end
 
+@testset "execute: ephemeral eval" begin
+    call("edit", Dict("session" => S, "edit_mode" => "insert",
+                      "new_source" => "probed = 6 * 7", "block" => 60))
+
+    r = call("execute", Dict("session" => S, "expr" => "probed + 1"))
+    @test r.value == "43"
+
+    r2 = call("execute", Dict("session" => S, "expr" => "typeof(probed)"))
+    @test occursin("Int", r2.value)   # the value is the type itself, e.g. "Int64"
+
+    # Nothing was added to the notebook.
+    before = length(call("read", Dict("session" => S)))
+    call("execute", Dict("session" => S, "expr" => "probed * 2"))
+    @test length(call("read", Dict("session" => S))) == before
+
+    @test call("execute", Dict("session" => S, "expr" => "1 +")).error   # parse error
+    @test call("execute", Dict("session" => S, "expr" => "undefined_name_xyz")).error
+
+    call("edit", Dict("session" => S, "cell_id" => "probed", "edit_mode" => "delete"))
+end
+
 @testset "unknown references" begin
     @test call("edit", Dict("session" => S, "cell_id" => "nope",
                             "new_source" => "1")).error

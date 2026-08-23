@@ -242,6 +242,32 @@ Waits up to `block` seconds for the notebook to go idle, so following up a run t
     return_type=TextContent,
 )
 
+pluto_execute = MCPTool(
+    name="execute",
+    description="""Evaluate an expression in the notebook's live workspace, without creating a cell.
+
+For probing values that don't belong in the saved notebook: `@doc sym`, `methods(f)`, `typeof(x)`, `size(M)`, checking a variable before committing to a cell that uses it. Runs in the same workspace `edit`/`run` use, so every notebook variable, `using`d package, and `include`d function is in scope. Nothing is saved and no cell is added or changed.""",
+    parameters=[
+        ToolParameter(name="expr", type="string", description="A single Julia expression, as it would appear inside a cell", required=true),
+        ToolParameter(name="session", type="string", description="Which session", required=false, default="default"),
+    ],
+    handler=(args -> @safely begin
+        name = _sess(args); s = _session(name); nb = _notebook(name)
+        parsed = try
+            Meta.parse(String(args["expr"]))
+        catch e
+            return _err("parse error: $(sprint(showerror, e))")
+        end
+        try
+            result = Pluto.WorkspaceManager.eval_fetch_in_workspace((s.session, nb), parsed)
+            _ok((value=repr(result), type=string(typeof(result))))
+        catch e
+            _err("eval failed: $(sprint(showerror, e))")
+        end
+    end),
+    return_type=TextContent,
+)
+
 pluto_output = MCPTool(
     name="output",
     description="""One cell's output, plus its stdout/@info logs.
@@ -349,7 +375,7 @@ pluto_stop = MCPTool(
 )
 
 const ALL_TOOLS = [pluto_start, pluto_open, pluto_create, pluto_read, pluto_edit,
-                   pluto_run, pluto_status, pluto_output, pluto_png, pluto_stop]
+                   pluto_run, pluto_status, pluto_execute, pluto_output, pluto_png, pluto_stop]
 
 function build_server()
     mcp_server(
