@@ -599,7 +599,7 @@ Every response except `output`'s bytes, `start`'s host/secret and `list`'s paths
 """
 
 function build_server()
-    mcp_server(name="pluto", version="0.4.3",
+    mcp_server(name="pluto", version="0.4.4",
                description=SERVER_DESCRIPTION, tools=ALL_TOOLS)
 end
 
