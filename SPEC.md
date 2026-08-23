@@ -32,7 +32,7 @@ Ten. Signatures are the contract; defaults shown.
 start()
 open(path=nothing, create=false, wait_seconds=0.1)
 list()
-edit(notebook, cell=nothing, code=nothing, mode="replace", cell_type="code", wait_seconds=0.1, delete_on_success=false)
+edit(notebook, cell=nothing, code=nothing, mode="replace", wait_seconds=0.1, delete_on_success=false)
 run(notebook, cells=nothing, wait_seconds=0.1)
 read(notebook, cells=nothing, tree=false, wait_seconds=0.1, since=nothing)
 output(notebook, cell, mime)
@@ -42,7 +42,7 @@ stop(notebook=nothing, cell=nothing)
 ```
 
 - `start` / `stop`: lifecycle, scope narrowing with each argument. `stop()` stops everything, `stop(notebook)` shuts one notebook down and sweeps its spill files, `stop(notebook, cell)` interrupts that cell's evaluation (the UI stop button).
-- `open`: get a notebook, running it. Pathless create gives an anonymous scratch notebook (Pluto cutename in tempdir); the description tells the agent to name kept work after the experiment. New notebooks get the wide-layout cell; every workspace gets the render helpers.
+- `open`: get a notebook, running it. Pathless create gives an anonymous scratch notebook (Pluto cutename in tempdir); the description tells the agent to name kept work after the experiment. A created notebook is EMPTY — content in it is the agent's, never this package's. Every worker gets the render helper.
 - `list`: open notebooks and their paths.
 - `edit`: `mode` is `replace`, `insert` (after `cell`, or append when `cell=nothing`), or `delete`. Modes share every other argument, which is why one tool holds them. `delete_on_success=true`: the cell runs normally in the workspace, visible in the browser, and is deleted iff `status` is `success` at return time; otherwise it stays and the agent removes it by the returned id. With `wait_seconds=0` the server returns before witnessing success, so the flag never fires. That return-time deletion is its entire contract.
 - `run`: recompute cells (`cells=nothing` means all). Backup path only: `edit` saves and runs, human browser edits run through Pluto's UI, so `run` exists for cells whose non-reactive inputs changed (files on disk, RNG, env). The from-scratch reproducibility check is `stop` + `open`, not `run`.
@@ -60,7 +60,7 @@ Every tool response except `output` bytes, `start` host/secret, and `list` paths
 `status, waited_seconds, timestamp, cells`. `timestamp` is ISO 8601 UTC with milliseconds (`"2026-08-23T18:42:23.788Z"`) — fixed width, so lexicographic order is chronological order; `since` takes it back, and still accepts a float unix time.
 `cells` lists every cell the reactive cascade touched, including clean downstream re-runs.
 
-`code` is sent only to a session that does not already hold it. One ledger per (session, notebook) records the hash of every cell's code as delivered — by a record that carried it, or by the `edit` that supplied it — and a cell whose hash matches omits the field. That covers an edit's own cell (the caller wrote the text) and the whole execution cascade (a re-run never rewrites code). No content comparison: markdown is wrapped in `md"""` on the way in and is still the caller's own cell.
+`code` is sent only to a session that does not already hold it. One ledger per (session, notebook) records the hash of every cell's code as delivered — by a record that carried it, or by the `edit` that supplied it — and a cell whose hash matches omits the field. That covers an edit's own cell (the caller wrote the text) and the whole execution cascade (a re-run never rewrites code). No content comparison: the stored text is the caller's own text, unaltered.
 
 `read(cells=[...])` is the way back: naming cells asks to be told about them, so they come back whole — uncompacted, code included, ledger or not. The reference point is the agent's context, and after a compact it no longer holds what the ledger claims. A bare `read` stays compact, so polling pays nothing for code it already has.
 
@@ -176,6 +176,10 @@ A post-mortem, so these are not reopened without new evidence. Each entry names 
 **A `full` parameter on `read`.** Full text for one cell is `output`'s job, and two ways to ask the same question is one too many.
 
 **`wait_seconds` defaulting to 0.** An ordinary cell finishes in milliseconds, so every edit came back `calculating` and needed a second call to learn it had already succeeded. 0.1 keeps the fire-and-forget available without making it the default.
+
+**A `cell_type` parameter, wrapping the agent's text in `md"""…"""` for it.** An `.ipynb` reflex: that format has typed cells, and Pluto does not. A Pluto cell is a Julia expression, and prose is the expression `md"""…"""` like any other. The parameter bought one convenience and cost a double-wrap guard, an exception in the code ledger, and a `$`-interpolation surprise in text the agent believed was literal. The agent writes Julia; this package does not edit it.
+
+**A wide-layout cell written into every new notebook.** `html"""<style>main { max-width: 95vw; }</style>"""` is a guess about how a human likes to read, put into their artifact by a package that was not asked. An agent that wants a wide column writes that cell.
 
 **Cell names as identity.** Names are addressing convenience, taken from Pluto's reactivity graph; the UUID is the identity and is always accepted. A cell that stops parsing loses its name, and an identity that disappears when the code breaks is not an identity.
 

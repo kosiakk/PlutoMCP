@@ -658,29 +658,23 @@ end
 busy_cells(nb::Pluto.Notebook) = [c for c in nb.cells if c.running || c.queued]
 
 """
-    notebook_source(cells; cell_types) -> Pluto.Notebook
+    notebook_source(cells) -> Pluto.Notebook
 
 Build a notebook from `Pluto.Cell`/`Pluto.Notebook` directly -- never by
 hand-writing the `.jl` file's text format, which only Pluto should own. Not
 yet saved to disk; call `Pluto.save_notebook` (or open it via a session) when
 ready.
 """
-function notebook_source(cells::Vector{String};
-                         cell_types::Vector{String}=fill("code", length(cells)))
-    length(cell_types) == length(cells) ||
-        error("cell_types has $(length(cell_types)) entries for $(length(cells)) cells")
+function notebook_source(cells::Vector{String})
     pcells = [Pluto.Cell(;
                   # uuid4, not Cell's default uuid1: uuid1 is time-based, and
                   # cells created in a loop land in the same tick, so their ids
                   # share a long leading run of digits and a short prefix
                   # identifies nothing. Random ids make prefixes discriminating.
-                  cell_id=uuid4(),
-                  code = t == "markdown" ? _wrap_markdown(src) : src)
-              for (src, t) in zip(cells, cell_types)]
+                  cell_id=uuid4(), code=src)
+              for src in cells]
     Pluto.Notebook(pcells)
 end
-
-_wrap_markdown(src::String) = startswith(strip(src), "md\"") ? src : "md\"\"\"\n$src\n\"\"\""
 
 # --------------------------------------------------------- the render helper --
 

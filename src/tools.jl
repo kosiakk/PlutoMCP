@@ -73,10 +73,6 @@ wait_param(default=DEFAULT_WAIT) = ToolParameter(name="wait_seconds", type="numb
     description="Seconds to wait before returning the record (default $default). The record comes back on completion, on a new error, or on expiry — whichever is first. Expiry shows as status=\"calculating\"; nothing is cancelled. Pass 0 to fire and forget, and raise it for work you expect to be slow.",
     required=false, default=default)
 
-# Pluto's centered, ~700px-wide column is a good default for prose and a bad one
-# for plots and wide tables. A new notebook always gets this first.
-const WIDE_LAYOUT_CELL = """html\"\"\"<style>main { max-width: 95vw; }</style>\"\"\""""
-
 # ------------------------------------------------------------------ lifecycle --
 
 pluto_start = MCPTool(
@@ -135,7 +131,7 @@ Pluto runs cells in DEPENDENCY order and allows one definition of a global per c
 )
 
 """
-Write the file a `create` will open: one wide-layout cell and nothing else.
+Write the file a `create` will open: an empty notebook.
 
 A pathless create lands in a temp directory under Pluto's own cutename, so a
 scratch notebook never accumulates in the directory a person keeps their real
@@ -147,7 +143,7 @@ function _draft_path(filename::Union{Nothing,String})
         joinpath(mkpath(joinpath(tempdir(), "plutomcp")), Pluto.cutename()) :
         (endswith(filename, ".jl") ? filename[1:end-3] : filename)
     dirname(base) == "" && (base = joinpath(Pluto.new_notebooks_directory(), base))
-    draft = notebook_source(String[WIDE_LAYOUT_CELL])
+    draft = notebook_source(String[])
     draft.path = Pluto.numbered_until_new(base; suffix=".jl")
     Pluto.save_notebook(draft)
     draft.path
@@ -280,6 +276,8 @@ pluto_edit = MCPTool(
     name="edit",
     description="""Write the notebook: insert, replace or delete a cell, save, and run it.
 
+`code` is Julia, always — prose is a cell whose expression is `md\"\"\"…\"\"\"`, the same as any other. There are no cell types.
+
 Editing one cell re-runs whatever depends on it, so a small edit can be a large run; the record lists every cell the cascade touched.
 
 `delete_on_success=true` (insert only) deletes the cell again if its status is `success` when the call returns — the way to probe a value, read a docstring, compute a statistic or render a plot without leaving anything behind. It runs normally and is visible in the browser while it does. If it errors, or if `wait_seconds` expired before the result was in, the cell stays and you delete it by the returned id.""",
@@ -287,7 +285,6 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
         ToolParameter(name="cell", type="string", description="Target cell. $CELL_REF_DOC For insert, the cell to insert AFTER; omit to append at the end.", required=false),
         ToolParameter(name="code", type="string", description="New cell text (ignored for mode=delete)", required=false),
         ToolParameter(name="mode", type="string", description="\"replace\", \"insert\" or \"delete\"", required=false, default="replace"),
-        ToolParameter(name="cell_type", type="string", description="\"code\" or \"markdown\" (markdown wraps the text in md\"\"\" — note that \$ still interpolates inside it, so escape a literal dollar as \\\$)", required=false, default="code"),
         ToolParameter(name="delete_on_success", type="boolean", description="Delete the cell again if it reaches status=\"success\" before this call returns (default false; insert only)", required=false, default=false),
         wait_param(),
         NOTEBOOK_PARAM,
@@ -297,7 +294,6 @@ Editing one cell re-runs whatever depends on it, so a small edit can be a large 
         name = _sess(args); s = _session(name); nb = _nb(args)
         mode = get(args, "mode", "replace")
         code = String(something(get(args, "code", nothing), ""))
-        get(args, "cell_type", "code") == "markdown" && (code = _wrap_markdown(code))
         ref = get(args, "cell", nothing)
         throwaway = get(args, "delete_on_success", false) == true
 

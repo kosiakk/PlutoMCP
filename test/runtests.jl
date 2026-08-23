@@ -19,8 +19,7 @@ function call(name::String, args::Dict=Dict{String,Any}())
 end
 
 "A notebook built from source, with no server involved."
-offline_notebook(cells::Vector{String}; cell_types::Vector{String}=fill("code", length(cells))) =
-    P.notebook_source(cells; cell_types)
+offline_notebook(cells::Vector{String}) = P.notebook_source(cells)
 
 """The rendered output of one cell, whichever shape the record used.
 
@@ -41,22 +40,19 @@ is_record(r) = all(f -> haskey(r, f), RECORD_FIELDS) &&
 # ---------------------------------------------------------------------------
 
 @testset "notebook_source" begin
-    nb = P.notebook_source(["x = 1", "# heading"]; cell_types=["code", "markdown"])
+    # Cells are Julia text, stored as written: no cell types, no wrapping.
+    # Pluto has no such concept and neither does this.
+    nb = P.notebook_source(["x = 1", "md\"# heading\""])
     @test nb isa Pluto.Notebook
     @test length(nb.cells) == 2
     @test nb.cells[1].code == "x = 1"
-    @test occursin("md\"\"\"", nb.cells[2].code)  # markdown cell wrapped
-
-    # Markdown that is already md"..." must not be double-wrapped.
-    nb2 = P.notebook_source(["md\"already\""]; cell_types=["markdown"])
-    @test !occursin("md\"\"\"\nmd\"already\"", nb2.cells[1].code)
+    @test nb.cells[2].code == "md\"# heading\""
 
     # ids are uuid4, not Cell's default uuid1 (time-based): cells made in a
     # tight loop still need discriminating prefixes -- see resolve_cell.
     many = P.notebook_source(fill("1", 20))
     @test length(unique(c.cell_id for c in many.cells)) == 20
 
-    @test_throws ErrorException P.notebook_source(["a", "b"]; cell_types=["code"])
 end
 
 @testset "is_name" begin
@@ -314,9 +310,9 @@ end
     # A pathless create is scratch: it must not land in the directory a person
     # keeps their real notebooks in.
     @test startswith(r.path, tempdir())
-    # Wide layout, because a reviewer is more likely looking at a plot than
-    # reading prose in a 700px column.
-    @test any(c -> occursin("max-width", c.code), r.cells)
+    # Empty: a new notebook is the agent's to write, and a layout cell put
+    # there by this package is content nobody asked for.
+    @test isempty(r.cells)
 end
 
 @testset "open: create with a name, and reopening it" begin
@@ -353,10 +349,10 @@ end
                       "code" => "total = a * b", "cell" => "b", "wait_seconds" => 60))
     @test cell_output(S, "total") == "42"
 
-    # markdown is wrapped for you -- and the wrapping is not read back, like
-    # any other code the caller just wrote. `code=true` is how you see it.
+    # Prose is a cell like any other, and its code is not read back to the
+    # caller who just wrote it. Naming the cell is how you see it.
     m = call("edit", Dict("session" => S, "mode" => "insert",
-                          "code" => "# a heading", "cell_type" => "markdown",
+                          "code" => "md\"\"\"# a heading\"\"\"",
                           "wait_seconds" => 60))
     @test !haskey(only(m.cells), :code)
     wrapped = call("read", Dict("session" => S,
@@ -399,10 +395,9 @@ end
                            "code" => "echoed = 6 * 8", "wait_seconds" => 60))
     @test !haskey(only(c for c in r2.cells if c.name == "echoed"), :code)
 
-    # Markdown is wrapped in md\"\"\" on the way in. Still the caller's cell,
-    # still not read back -- the ledger keys on the STORED text.
-    md = call("edit", Dict("session" => S, "mode" => "insert", "cell_type" => "markdown",
-                           "code" => "a heading", "wait_seconds" => 60))
+    # Prose is the caller's cell too, and not read back to them.
+    md = call("edit", Dict("session" => S, "mode" => "insert",
+                           "code" => "md\"a heading\"", "wait_seconds" => 60))
     entry_md = only(md.cells)
     @test !haskey(entry_md, :code)
 
@@ -430,7 +425,7 @@ end
     # nothing by reading it back.
     lit = "a string that is its own output"
     e = call("edit", Dict("session" => S, "mode" => "insert",
-                          "code" => lit, "cell_type" => "markdown", "wait_seconds" => 60))
+                          "code" => "md\"$lit\"", "wait_seconds" => 60))
     @test !haskey(only(e.cells), :output)
     call("edit", Dict("session" => S, "cell" => String(only(e.cells).cell_id),
                       "mode" => "delete", "wait_seconds" => 60))
@@ -581,7 +576,7 @@ end
     T = "dedup"
     call("start", Dict("session" => T))
     opened = call("open", Dict("session" => T, "create" => true, "wait_seconds" => 120))
-    @test all(c -> haskey(c, :code), opened.cells)        # first sight: in full
+    @test isempty(opened.cells)                           # a new notebook is empty
 
     ins = call("edit", Dict("session" => T, "mode" => "insert", "code" => "base = 2",
                             "wait_seconds" => 60))
@@ -596,7 +591,7 @@ end
     # name, status, unchanged_since and nothing else. Compressed, not hidden --
     # the cascade stays countable.
     again = call("read", Dict("session" => T))
-    @test length(again.cells) == 3
+    @test length(again.cells) == 2
     @test all(c -> haskey(c, :unchanged_since) && !haskey(c, :code), again.cells)
     # ISO 8601 UTC, fixed width: lexicographic order IS chronological order.
     @test all(c -> c.unchanged_since <= again.timestamp, again.cells)
@@ -769,8 +764,8 @@ end
 @testset "rendered markup never comes back" begin
     # A markdown cell's rendering IS the prose the agent just wrote, re-encoded.
     # The record says what mime it produced and stops there.
-    r = call("edit", Dict("session" => S, "mode" => "insert", "cell_type" => "markdown",
-                          "code" => "# Findings\n\nThe **mean** over \$(2+3) runs was significant.",
+    r = call("edit", Dict("session" => S, "mode" => "insert",
+                          "code" => "md\"\"\"\n# Findings\n\nThe **mean** over \$(2+3) runs was significant.\n\"\"\"",
                           "wait_seconds" => 60))
     c = only(r.cells)
     @test c.mime == "text/html"

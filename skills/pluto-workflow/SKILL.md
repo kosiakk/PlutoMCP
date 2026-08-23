@@ -53,6 +53,9 @@ definition of a global per cell**.
 - Prefer `x = let ... end` over `begin ... end` for a multi-step computation:
   `let` defines exactly one name, so it creates one dependency edge instead of
   several.
+- A cell is Julia, always. Prose is a cell whose expression is
+  `md"""…"""` — there are no cell types. Watch the `$`: it interpolates inside
+  `md"""…"""` as in any Julia string, so a literal dollar is `\$`.
 - Dependencies install themselves. Write `using DataFrames` in a cell; Pluto
   resolves it into an environment scoped to this notebook and records the
   versions inside the notebook file. No `Pkg.add`, no restart.
