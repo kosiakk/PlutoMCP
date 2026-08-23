@@ -129,8 +129,16 @@ function start_session(name::AbstractString; port::Union{Nothing,Int}=nothing)
     return SESSIONS[nm]
 end
 
+"""
+Shut down every notebook this session has open -- each one owns a worker
+process -- THEN close the HTTP server. `close(server)` alone leaves those
+worker processes running with nothing left to stop them.
+"""
 function stop_session(name::AbstractString)
     s = _session(name)
+    for nb in collect(values(s.session.notebooks))
+        Pluto.SessionActions.shutdown(s.session, nb; async=false)
+    end
     close(s.server)
     delete!(SESSIONS, String(name))
     delete!(CHANGES, String(name))

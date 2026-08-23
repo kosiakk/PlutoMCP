@@ -363,6 +363,12 @@ end
 end
 
 @testset "stop" begin
+    # Each open notebook owns a worker process; stop must not just close the
+    # HTTP server and leave those running.
+    nb = P._notebook(S)
+    worker = Pluto.WorkspaceManager.get_workspace((P._session(S).session, nb)).worker
+
     @test call("stop", Dict("session" => S)).ok
     @test call("read", Dict("session" => S)).error       # session is gone
+    @test !Pluto.Malt.isrunning(worker)
 end
