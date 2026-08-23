@@ -23,15 +23,11 @@ That is free — it is already in the record you were returned. It answers
 "what shape is this", "what type", "roughly what magnitude". A `≥` means
 Pluto truncated: the true length is one cell away, not a guess to make.
 
-That is Pluto's own summary — the same one a human sees in the browser. A
-nested field shown as `…` — `(trimmed = (est = 0.94, ci = …))` — is the record
-being brief, not the value being unavailable. `output(cell="robust",
-mime="text/plain")` gives you the value as Julia prints it, complete.
-
-Which to reach for: the sketch answers *what shape is this*, `output` answers
-*what is this exactly*, and a probe cell answers *what about this part* —
+Which to reach for, and in this order: the sketch answers *what shape is
+this*, `output` answers *what is this exactly* (a nested `…` and every element
+of a long array included), and a probe cell answers *what about this part* —
 `x[4090:4110]`, `describe(df)`. Ask `output` for a 100k-element array and you
-will get all 100k, spilled to a file; that is usually the wrong question.
+get all 100k, spilled to a file; that is usually the wrong question.
 
 ## 2. Statistics, not values
 
@@ -50,16 +46,7 @@ Good probes: `extrema`, `quantile`, `mean`/`std`, `count(isnan, x)`,
 ## 3. The picture, when shape is the question
 
 When the question is *what does this look like* — not a number but a shape —
-ask for the figure. `output` on a cell whose value is a plot renders it and
-returns the image:
-
-```
-output(cell="residual_fit", mime="image/png")
-```
-
-Pluto stores one rendered MIME per cell and prefers SVG, which is markup no
-client can display; `output` asks the figure's own library for a PNG instead.
-No cell, no round trip.
+ask for the figure: `output(cell="residual_fit", mime="image/png")`.
 
 **A picture is cheaper than a text plot of the same data.** Vision input is
 billed by pixel area, roughly `width × height / 750`, and file size is
@@ -68,58 +55,30 @@ plot as a braille canvas is ~5 KB of text and on the order of 2000 tokens,
 because braille codepoints tokenize badly and every blank `⠀` is a character.
 Six times the cost to see less.
 
-A cell that defines no name — a plot built inside a `let`, a subplot — works
-the same way: `output` addresses cells by id, and every cell has one.
+## 4. Counts, when the shape is a distribution
 
-The same call gives you any other format the figure supports, because it is
-just asking Julia to show the value that way: `mime="image/svg+xml"` returns
-the XML, `mime="application/pdf"` the PDF. Add `path="figure.svg"` and it is
-written to that file at any size instead of coming back to you — which is how
-you save a figure without writing a cell for it.
-
-## 4. Text plots, rarely
-
-A unicode canvas is worth it in one case: the notebook has **no** plotting
-library and the question does not justify adding one. `using UnicodePlots`
-makes Pluto install the package and write it into the notebook file's
-environment — permanently, even after the probe cell is deleted. That is a real
-edit to somebody's notebook in exchange for a picture you can barely read.
-
-The exception is `histogram`, which prints counts beside the bars. That is data
-with a shape attached rather than a rendering, and it reads well:
+`fit(Histogram, x, edges).weights` from StatsBase gives you the bin counts with
+no plotting package at all, and the counts are where the finding is:
 
 ```
-                ┌                                        ┐
-   [-4.0, -3.0) ┤▎ 1
-   [-3.0, -2.0) ┤██▋ 26
-   [-2.0, -1.0) ┤████████████▊ 123
-   [-1.0,  0.0) ┤███████████████████████████████████  336
-   [ 0.0,  1.0) ┤███████████████████████████████▌ 303
-   [ 1.0,  2.0) ┤██████████▌ 101
-   [ 2.0,  3.0) ┤█▏ 10
-   [ 3.0,  4.0) ┤█▎ 11
-   [ 4.0,  5.0) ┤██████████▍ 99
-   [ 5.0,  6.0) ┤█▏ 10
-                └                                        ┘
-                                 Frequency
+edges  -4  -3  -2  -1   0    1    2   3   4   5   6
+counts   1  26 123 336  303 101  10  11  99  10
 ```
 
-The correct reading: **this is bimodal, and that is the finding.** The main
-mass is a roughly symmetric bell centred just below 0 (336 + 303 in the two
-bins either side of zero, tapering to 1 at −4). But there is a clean second
-bump at [4.0, 5.0) holding 99 points — about 10% of the sample — separated from
-the main body by a genuine trough at [2.0, 4.0) where counts fall to 10 and 11.
+Read it: **bimodal, and that is the finding.** A symmetric bell centred just
+below zero (336 + 303 either side, tapering to 1 at −4), then a genuine trough
+at [2, 4) where counts fall to 10 and 11, then a clean second bump of 99 —
+about 10% of the sample. A tail decays monotonically; this goes down, stays
+down for two bins, and rises again by a factor of nine. That is a population.
 
-That is a *population*, not a tail: a tail decays monotonically, and this one
-goes down, stays down for two bins, then rises again by a factor of nine. The
-next probe follows from the picture — `count(>(3.5), x)` to size it exactly,
-then find what distinguishes those rows.
+The next probe follows from it: `count(>(3.5), x)` to size it exactly, then
+find what distinguishes those rows. Note what no plot was needed for — and what
+the mean would have done here, averaging two populations into a number
+describing neither.
 
-Note what it was *not* needed for: the mean, which would have averaged the two
-populations into a number describing neither. And note that every word of that
-reading came from the counts, not from the bars — which is why
-`fit(Histogram, x, edges).weights` from StatsBase answers the same question
-with no plotting package at all, and belongs in step 2.
+`using UnicodePlots` draws the same thing with bars, but installing it writes a
+dependency into the notebook file that outlives your probe cell. Counts read
+better anyway.
 
 ## What not to do
 

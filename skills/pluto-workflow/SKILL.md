@@ -15,7 +15,7 @@ control the notebook they live in.
 ## The loop
 
 ```
-open  →  edit  →  check status  →  edit  →  …  →  export
+open  →  edit  →  check status  →  edit  →  …  →  output(html)
 ```
 
 Every tool that runs or waits returns the same record:
@@ -80,19 +80,10 @@ edit(mode="insert", code="quantile(residuals, [0.01, 0.5, 0.99])", delete_on_suc
 edit(mode="insert", code="describe(df)", delete_on_success=true, wait_seconds=15)
 ```
 
-The cell runs normally and is visible in the browser while it does. If its
-status is `success` when the call returns, it is deleted again and you keep the
-answer. If it **errors**, or if `wait_seconds` expired before the result was
-in, the cell stays — read it, then remove it yourself:
-
-```
-edit(mode="delete", cell="<the cell_id from the record>")
-```
-
-That cleanup is your job, not the server's. A cell that vanished mid-error
-would be a worse surprise than one you delete on purpose. With
-`wait_seconds=0` the flag can never fire, so always give a throwaway probe a
-real `wait_seconds`.
+Deleted only if `status` is `success` when the call returns — so a probe that
+errors stays put for you to read, and cleaning it up afterwards is your job,
+not the server's. With `wait_seconds=0` the flag can never fire, so give a
+throwaway probe a real one.
 
 ## Logging from a cell
 
@@ -109,67 +100,63 @@ so a long print loop loses exactly the part you wanted.
 ## Reading the record
 
 Each cell entry carries `name` (the global it defines — that is also how you
-address it), `cell_id`, `status`, `code`, the rendered output, log entries, and
-an `error` message if it failed.
+address it), `cell_id`, `status`, the rendered output, log entries, and an
+`error` message if it failed.
 
-`code` is only sent when you do not already have it. The cell you just wrote
-comes back without it — you supplied that text — and so does a cell that merely
-re-ran, because an execution cascade never rewrites code. Everything else is
-there: status, output, logs, errors.
+**Two things are left out on purpose, and neither is missing.**
 
-When you need the source back — after a compact, or for a cell you never
-wrote — name it: `read(cells=["total", "abl"])` answers with those cells whole,
-code included. Naming a cell IS asking to be told about it; a bare `read` stays
-compact.
+`code` you already hold. The cell you just wrote comes back without it, and so
+does one that merely re-ran — a cascade never rewrites code. When you need
+source back, after a compact or for a cell you never wrote, name it:
+`read(cells=["total", "abl"])` answers whole. Naming a cell IS asking to be
+told about it; a bare `read` stays compact.
 
-A cell you have already been shown, unchanged, comes back short:
+A cell you have already been shown, unchanged, comes back as three fields:
 
 ```
 {"name": "total", "status": "success", "unchanged_since": "2026-08-23T18:42:23.788Z"}
 ```
 
-That is the same cell, not a different one — you already have its code and its
-output further up. Nothing is hidden: every cell the cascade touched is still
-listed, so you can see the blast radius of an edit at a glance. If you want the
-full text of one again, call `output(cell=..., mime="text/plain")`; if you want
-only what actually changed, pass `since`.
+Same cell, not a different one. Nothing is hidden — every cell the cascade
+touched is still listed, so an edit's blast radius is visible at a glance.
+`since` drops them entirely if you want only what changed.
 
 `unchanged_since` certifies the *rendered* output. For a container that is the
 one-line sketch, not the underlying values: two arrays with the same sketch can
-differ deeper in. When that matters, a probe cell answers it — `hash(x)`,
-`extrema(x)`, `sum(x)`.
+differ deeper in. A probe cell settles it — `hash(x)`, `extrema(x)`.
 
-**The record is Pluto's rendering; `output` is Julia's.** The record summarises
-a value the way Pluto summarises it in the browser — one line, one level deep,
-`Vector{Float64}, ≥30 elements: [0.12, …]`. `output` gives you the value as
-Julia itself prints it, with nothing elided, fetched from the worker:
+## The record is Pluto's rendering; `output` is Julia's
+
+The record summarises a value the way Pluto does in the browser: one line, one
+level deep, `Vector{Float64}, ≥30 elements: [0.12, …]`. Nested fields show as
+`…`, and a plot or a markdown cell is `mime` and nothing else — a picture is
+not describable in words, and your own prose is not news to you.
+
+`output` gives you the thing itself, as Julia prints it, and `mime` says which
+form you want:
 
 ```
-output(cell="robust", mime="text/plain")     the value, complete
-output(cell="residual_fit", mime="image/png") the picture
+output(cell="robust", mime="text/plain")        the value, complete, nothing elided
+output(cell="fig", mime="image/png")            the picture
+output(cell="fig", mime="image/svg+xml")        the XML instead
+output(mime="text/html", path="report.html")    the whole notebook, to a file
+output(mime="text/plain")                       the notebook's .jl source
 ```
 
-`mime` is required, and those are the two. A nested field the record showed as
-`…` is there in full; so is every element of a long array. If it is too big to
-carry it spills to a file and you get the path.
-- **A markdown cell's output never comes back**, and neither does a plot's or a
-  widget's: the entry is `mime` and nothing else. Your markdown renders to the
-  prose you just wrote, so there is nothing in it you do not have. A `success`
-  status is the confirmation that it rendered.
-- If a markdown cell interpolates a value — `md"the mean is $(m)"` — it will
-  re-report whenever that value changes, because the rendered output changed.
-  `output(cell=..., mime="text/plain")` shows you what it says: the cell's value
-  is a `Markdown.MD`, and Julia prints that as text.
-- A cell that defines no name — a `let` block, a plot — is reachable too:
-  `output` works by `cell_id`, which every cell has.
-- Text over 2 KB spills to a file and the payload names the path. Read or grep
-  that file directly if you have filesystem tools; if you do not, a probe cell
-  that narrows the value (`x[1:20]`, `describe(x)`) is the way in.
+Ask for a MIME the value cannot do and the answer lists what it can. `path`
+writes to that file at any size; without it, anything too big to carry spills
+to a temp file and you get the path. A cell that defines no name — a `let`
+block, a plot — works the same way: `output` addresses by `cell_id`.
+
+## Also in the record
+
 - `read(tree=true)` gives each cell's `references` and its `upstream` /
   `downstream` cells: what breaks if this changes.
 - `read(since=<timestamp>)` reports what a **human** edited in the browser,
-  with `old_code` beside the cell's current `code`. That is the review channel. Your own edits
-  never appear there.
+  with `old_code` beside the current `code`. That is the review channel; your
+  own edits never appear there.
+- Text over 2 KB spills to a file and the payload names the path — read or grep
+  it if you have filesystem tools, or narrow the value in a probe cell.
 
 ## Finishing
 
@@ -177,11 +164,9 @@ Name the file after the experiment when the work is meant to be kept —
 `open(path="throughput-vs-batch-size.jl", create=true)`. A pathless
 `create` is a scratch notebook in a temp directory.
 
-`output(mime="text/html", path="…")` with no `cell` writes a self-contained
-HTML file — the whole notebook, code and outputs embedded, viewable with no
-Pluto server. Commit the `.jl` and the `.html` together: that pair is the
-provenance record, and every figure in it traces back to a cell in a notebook
-that reruns from scratch. (`output(mime="text/plain")` with no cell gives you
-the `.jl` source itself, if you ever want to read the whole file.)
+`output(mime="text/html", path="…")` writes the notebook as one self-contained
+HTML file, code and outputs embedded, viewable with no Pluto server. Commit the
+`.jl` and the `.html` together: that pair is the provenance record, and every
+figure in it traces back to a cell in a notebook that reruns from scratch.
 
 `stop` when you are done, so the server and its worker processes go away.
