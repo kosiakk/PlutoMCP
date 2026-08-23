@@ -117,11 +117,11 @@ bytes, and human-edit history.
 | `export` | self-contained HTML with code and outputs embedded |
 | `stop` | stop the session, one notebook, or one running cell |
 
-There is no `execute`, no `docs`, no `deps`, no `png` and no `status`. Probing a
-value and reading a docstring are cells (`edit` with
+Probing a value and reading a docstring are cells (`edit` with
 `delete_on_success=true`); dependencies are `read(tree=true)`; waiting is
 `read(wait_seconds=N)`; a picture is `PlutoMCP.AsPNG(fig)` in a cell, using a
-helper injected into every workspace.
+helper injected into every workspace. None of those is a tool, and SPEC.md
+records why.
 
 ## One record
 
@@ -137,6 +137,16 @@ paths parses as the same record:
 `status` is one enum — `pending | calculating | success | error` — on cells and
 on the record alike. `cells` covers everything the reactive cascade touched,
 including cells that re-ran cleanly.
+
+A cell this session has already been shown, unchanged, comes back as
+`{"name": "total", "status": "success", "unchanged_since": 1787485656.06}` —
+compressed, not hidden, so the cascade stays countable while a long re-run
+costs a few bytes instead of a few kilobytes. `read(since=<timestamp>)` drops
+those cells entirely and gives a pure delta.
+
+`unchanged_since` certifies the *rendered* output. For a container that is the
+one-line sketch, not the underlying values — a probe cell (`hash(x)`) is how
+you get value-level certainty, and that is deliberate rather than missing.
 
 ## Cells have names
 
@@ -157,7 +167,8 @@ Two rules hold this together:
 
 ## Long-running cells
 
-Everything that runs takes `wait_seconds` (default 0). The call returns on
+Everything that runs takes `wait_seconds` (default 0.1, and `0` to fire and
+forget). The call returns on
 completion, on a new error, or on expiry — whichever comes first. Expiry shows
 as `status: "calculating"`, which is neither an error nor a timeout: the cell is
 still going, the browser already shows it running, and
@@ -175,10 +186,9 @@ notebook edits in either direction. `read(since=…)` is the second channel's re
 side — it reports which cells a human changed since you last looked, with
 `old_code` and `new_code`, so you can answer by editing back.
 
-A prior version of this tool added a third channel — an in-notebook "ask AI"
-inbox — behind a fork of Pluto. That fork is not something anyone can install,
-so it was dropped: the terminal already carries text, and a feature that needs
-a fork is a feature nobody has.
+There is deliberately no third channel. An in-notebook "ask AI" inbox would
+need a fork of Pluto, and a feature that needs a fork is a feature nobody has —
+see SPEC.md's rejected list.
 
 ## Concurrent editing is the point
 

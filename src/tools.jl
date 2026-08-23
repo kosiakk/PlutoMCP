@@ -436,7 +436,7 @@ The notebook object is read directly, so a human's browser edits are already in 
                             _targets(args, nb) : copy(nb.cells))
         changes = _human_edits(name, nb, since)
         # A cell the human deleted has nothing left to describe, so its entry is
-        # synthesised rather than rendered from a Cell that no longer exists.
+        # synthesised, because there is no Cell left to render it from.
         live = Set(string(c.cell_id) for c in nb.cells)
         for (id, e) in changes
             id in live || push!(cells, merge((name=id, cell_id=id, status="success",
