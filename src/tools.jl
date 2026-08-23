@@ -403,6 +403,40 @@ end""")
     return_type=Content,
 )
 
+pluto_bond = MCPTool(
+    name="bond",
+    description="""Set an `@bind`-ed variable's value and re-run its dependents, the way moving the slider/widget in the browser would. Blocks until those cells finish, same as the browser's own bond handling.
+
+Only for variables introduced with `@bind name widget`; use edit for anything else. Without this, an interactive notebook can't be explored -- every bound value would be stuck at whatever the widget's default was on load.""",
+    parameters=[
+        ToolParameter(name="name", type="string", description="The bound variable's name, as written in @bind name widget", required=true),
+        ToolParameter(name="value", type="string", description="New value for the binding (e.g. a slider's number, a checkbox's true/false)", required=true),
+        NOTEBOOK_PARAM,
+        ToolParameter(name="session", type="string", description="Which session", required=false, default="default"),
+    ],
+    handler=(args -> @safely begin
+        name = _sess(args); s = _session(name); nb = _nb(args)
+        sym = Symbol(String(args["name"]))
+        # Not `haskey(nb.bonds, sym)`: a bond that has never been set by a
+        # browser (the common case for a headless notebook) has no entry yet.
+        # is_assigned_anywhere is what set_bond_values_reactive itself checks.
+        Pluto.MoreAnalysis.is_assigned_anywhere(nb.topology, sym) ||
+            error("no @bind'ed variable named \"$(args["name"])\" -- see read for what's in this notebook")
+        nb.bonds[sym] = Pluto.BondValue(args["value"])
+        # NOT run_async=true: set_bond_values_reactive forwards kwargs straight
+        # into its own run_reactive_async! call, silently overriding the
+        # save=false-adjacent run_async=false it hardcodes -- so this is the
+        # only way to get the synchronous, "done when it returns" behavior
+        # every other tool here fakes with a block-then-poll loop.
+        Pluto.set_bond_values_reactive(; session=s.session, notebook=nb,
+            bound_sym_names=Symbol[sym], run_async=false)
+        labels = cell_labels(nb)
+        _ok((set=String(args["name"]),
+             errored=[labels[string(c.cell_id)] for c in nb.cells if c.errored]))
+    end),
+    return_type=TextContent,
+)
+
 pluto_deps = MCPTool(
     name="deps",
     description="""Upstream and downstream cells for a cell: what it reads, and what would break if it changed.
@@ -457,7 +491,7 @@ pluto_stop = MCPTool(
 
 const ALL_TOOLS = [pluto_start, pluto_open, pluto_create, pluto_list, pluto_read, pluto_edit,
                    pluto_run, pluto_status, pluto_execute, pluto_output, pluto_png,
-                   pluto_deps, pluto_export, pluto_stop]
+                   pluto_bond, pluto_deps, pluto_export, pluto_stop]
 
 function build_server()
     mcp_server(

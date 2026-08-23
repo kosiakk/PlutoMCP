@@ -324,6 +324,25 @@ end
     @test any(c -> c.code == "a = 12345", call("read", Dict("session" => S)))
 end
 
+@testset "bond: set slider/widget values" begin
+    call("edit", Dict("session" => S, "edit_mode" => "insert",
+                      "new_source" => "slider = @bind slider html\"<input type=range>\"", "block" => 60))
+    call("edit", Dict("session" => S, "edit_mode" => "insert",
+                      "new_source" => "doubled_bond = slider * 2", "block" => 60))
+
+    r = call("bond", Dict("session" => S, "name" => "slider", "value" => 7))
+    @test isempty(r.errored)
+    @test call("output", Dict("session" => S, "cell_id" => "doubled_bond")).body == "14"
+
+    call("bond", Dict("session" => S, "name" => "slider", "value" => 10))
+    @test call("output", Dict("session" => S, "cell_id" => "doubled_bond")).body == "20"
+
+    @test call("bond", Dict("session" => S, "name" => "not_a_bond", "value" => 1)).error
+
+    call("edit", Dict("session" => S, "cell_id" => "doubled_bond", "edit_mode" => "delete"))
+    call("edit", Dict("session" => S, "cell_id" => "slider", "edit_mode" => "delete"))
+end
+
 @testset "png" begin
     call("edit", Dict("session" => S, "edit_mode" => "insert",
                       "new_source" => "using Plots", "block" => 300))

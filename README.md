@@ -99,6 +99,7 @@ claude mcp add pluto -- julia --project=$HOME/Documents/PlutoMCP \
 | `list` | every notebook this session has open, and which is current |
 | `read` | list cells as they are now; runs nothing |
 | `edit` | replace / insert / delete a cell, then run it |
+| `bond` | set an `@bind`-ed variable's value, like moving its widget |
 | `run` | run cells |
 | `status` | what is still running, and which cells a human changed since you last looked |
 | `execute` | evaluate an expression in the workspace, no cell created |
