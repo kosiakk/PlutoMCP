@@ -83,7 +83,7 @@ Output rendering:
 
 - `wait_seconds` on every running tool, default 0.1; `waited_seconds` its receipt in the record. One semantics: return on completion, on new error, or on expiry, whichever comes first. Expiry shows as `status=calculating`. Fast cells converge within the default; `0` is fire-and-forget for batch authoring.
 - `status`: `pending | calculating | success | error`, the only progress vocabulary. No `finished`, no `errored` booleans anywhere.
-- `code` for cell text, everywhere. Human edits report `old_code` / `new_code`.
+- `code` for cell text, everywhere, and always the cell's text as it is now. A human edit adds `old_code`; the change log is a snapshot and never overrides the live code.
 - `cell` / `cells` for addressing cells, `notebook` for addressing notebooks: name/path, UUID, or unique prefix, resolved by one shared function.
 - `timestamp` from the record round-trips into `since`. The agent copies, never computes time. The stamp is snapshot acquisition time, taken before cell state is read, assembly under the notebook lock: concurrent changes land at or after the stamp and reappear next `read`. Delivery is at-least-once; dedup makes duplicates cost one compact line. `since` is a view over the same reported-hash comparison: omit unchanged cells instead of compacting them. Never Pluto run timestamps: re-ran is not changed.
 

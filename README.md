@@ -200,7 +200,7 @@ is the follow-up — one call, not a poll loop, returning the same record.
 There are exactly two channels between you and the human: terminal text, and
 notebook edits in either direction. `read(since=…)` is the second channel's read
 side — it reports which cells a human changed since you last looked, with
-`old_code` and `new_code`, so you can answer by editing back.
+`old_code` beside the cell's current `code`, so you can answer by editing back.
 
 There is deliberately no third channel. An in-notebook "ask AI" inbox would
 need a fork of Pluto, and a feature that needs a fork is a feature nobody has —

@@ -476,7 +476,10 @@ function _human_edits(name, nb, since)
     edits = Dict{String,NamedTuple}()
     for e in log
         e.at > cutoff || continue
-        edits[e.cell_id] = (change=e.change, old_code=e.old_code, new_code=e.new_code)
+        # `old_code` only. The log is a snapshot from when the event fired, and
+        # the cell may have moved on since; the record's `code` is the cell's
+        # text as it is NOW, and a stale entry must not override it.
+        edits[e.cell_id] = (change=e.change, old_code=e.old_code)
     end
     edits
 end

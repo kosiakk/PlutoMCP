@@ -607,8 +607,10 @@ end
     delta = call("read", Dict("session" => T, "since" => t))
     @test is_record(delta)
     @test "base" in [c.name for c in delta.cells]
-    @test all(c -> haskey(c, :code), delta.cells)         # deltas are never compact
-    @test any(c -> get(c, :old_code, "") == "base = 5" && c.new_code == "base = 7",
+    # Deltas are never compact -- though code this session wrote is still not
+    # read back to it; what a human typed is not code this session holds.
+    @test all(c -> haskey(c, :output), delta.cells)
+    @test any(c -> get(c, :old_code, "") == "base = 5" && c.code == "base = 7",
               delta.cells)
 
     call("stop", Dict("session" => T))
@@ -630,7 +632,7 @@ end
     call("stop", Dict("session" => T))
 end
 
-@testset "read: a human's browser edit comes back with old_code and new_code" begin
+@testset "read: a human's browser edit comes back with old_code and code" begin
     t0 = call("read", Dict("session" => S)).timestamp
 
     # An edit made THROUGH our own tools is pre-marked as seen, so it must not
@@ -652,7 +654,7 @@ end
     edited = only(c for c in theirs.cells if get(c, :change, nothing) == "edited")
     @test edited.name == "a"
     @test edited.old_code == "a = 5"
-    @test edited.new_code == "a = 9"
+    @test edited.code == "a = 9"
     # ...and the cascade it caused is in the same record, without a second call.
     @test any(c -> c.name == "total", theirs.cells)
 end

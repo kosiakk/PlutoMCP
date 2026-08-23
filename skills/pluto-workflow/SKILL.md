@@ -138,7 +138,7 @@ differ deeper in. When that matters, a probe cell answers it — `hash(x)`,
 - `read(tree=true)` gives each cell's `references` and its `upstream` /
   `downstream` cells: what breaks if this changes.
 - `read(since=<timestamp>)` reports what a **human** edited in the browser,
-  with `old_code` and `new_code`. That is the review channel. Your own edits
+  with `old_code` beside the cell's current `code`. That is the review channel. Your own edits
   never appear there.
 
 ## Finishing
