@@ -403,6 +403,27 @@ end""")
     return_type=Content,
 )
 
+pluto_deps = MCPTool(
+    name="deps",
+    description="""Upstream and downstream cells for a cell: what it reads, and what would break if it changed.
+
+Straight from Pluto's own reactivity graph, keyed by the global each dependency is about -- no tracing assignments by eye to answer "what depends on X" or "what does X depend on".""",
+    parameters=[
+        ToolParameter(name="cell_id", type="string", description=CELL_REF_DOC, required=true),
+        NOTEBOOK_PARAM,
+        ToolParameter(name="session", type="string", description="Which session", required=false, default="default"),
+    ],
+    handler=(args -> @safely begin
+        nb = _nb(args); c = resolve_cell(nb, args["cell_id"])
+        labels = cell_labels(nb)
+        bylabel(m) = Dict(string(sym) => unique!([labels[string(cc.cell_id)] for cc in cells])
+                           for (sym, cells) in m if !isempty(cells))
+        _ok((upstream=bylabel(Pluto.upstream_cells_map(c, nb.topology)),
+             downstream=bylabel(Pluto.downstream_cells_map(c, nb.topology))))
+    end),
+    return_type=TextContent,
+)
+
 pluto_export = MCPTool(
     name="export",
     description="""Export the notebook as one self-contained HTML file: code, outputs and a copy of the `.jl` source are all embedded, viewable with no Pluto server and no internet connection.
@@ -436,7 +457,7 @@ pluto_stop = MCPTool(
 
 const ALL_TOOLS = [pluto_start, pluto_open, pluto_create, pluto_list, pluto_read, pluto_edit,
                    pluto_run, pluto_status, pluto_execute, pluto_output, pluto_png,
-                   pluto_export, pluto_stop]
+                   pluto_deps, pluto_export, pluto_stop]
 
 function build_server()
     mcp_server(

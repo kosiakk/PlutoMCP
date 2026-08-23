@@ -104,6 +104,7 @@ claude mcp add pluto -- julia --project=$HOME/Documents/PlutoMCP \
 | `execute` | evaluate an expression in the workspace, no cell created |
 | `output` | one cell's output, plus its logs |
 | `png` | render a plotting cell as an image |
+| `deps` | upstream/downstream cells for a name: what breaks if it changes |
 | `export` | self-contained HTML with code and outputs embedded |
 | `stop` | shut the server down |
 

@@ -145,6 +145,17 @@ end
     @test call("output", Dict("session" => S, "cell_id" => "prod")).body == "700"
 end
 
+@testset "deps: upstream/downstream" begin
+    r = call("deps", Dict("session" => S, "cell_id" => "b"))
+    @test "prod" in r.downstream.b
+    @test isempty(r.upstream)      # b = 7 reads nothing notebook-defined
+
+    r2 = call("deps", Dict("session" => S, "cell_id" => "prod"))
+    @test "a" in r2.upstream.a
+    @test "b" in r2.upstream.b
+    @test isempty(r2.downstream)   # nothing depends on prod
+end
+
 @testset "insert and delete" begin
     before = length(call("read", Dict("session" => S)))
 
