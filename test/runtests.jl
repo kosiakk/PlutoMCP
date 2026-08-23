@@ -701,10 +701,11 @@ end
     t = call("read", Dict("cells" => ["total"], "dependencies" => true))
     c = only(t.cells)
     @test "a" in c.upstream["a"]
-    # `*` is a reference too, and correctly so: the tree is Pluto's own
-    # reactivity graph, not a filtered view of the globals a person would name.
-    @test issubset(["a", "b"], c.references)
-    @test !any(r -> startswith(r, "PlutoRunner"), c.references)
+    # One hop, keyed by the variable that connects the cells — and no
+    # `references`: Pluto's list counts `*` as one, and the rest of it is
+    # `keys(upstream)` said twice.
+    @test !haskey(c, :references)
+    @test Set(string.(keys(c.upstream))) == Set(["a", "b"])
 
     a = only(call("read", Dict("cells" => ["a"], "dependencies" => true)).cells)
     @test "total" in a.downstream["a"]

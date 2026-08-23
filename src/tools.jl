@@ -499,18 +499,15 @@ One hop each way, not a tree: `upstream` is the cells that define what this
 one reads, `downstream` the cells that read what it defines, each keyed by the
 variable that connects them. Transitive closure is the caller's to walk if it
 wants one — and rarely what "what breaks if I change this" needs.
+
+No `references`. Pluto's own list is every global the cell reads, `+` and
+`sqrt` included, and once the ones nobody asked about are gone what remains is
+`keys(upstream)` spelled a second way.
 """
 function _dependencies_of(nb, c::Pluto.Cell, labels)
-    # `topology.nodes` is an ImmutableDefaultDict: indexing an unanalysed cell
-    # yields an empty node rather than throwing, and it has no 3-arg `get`.
-    node = nb.topology.nodes[c]
     bylabel(m) = Dict(string(sym) => unique!([labels[string(cc.cell_id)] for cc in cs])
                       for (sym, cs) in m if !isempty(cs))
-    # A macro like @bind or html"..." drags in Pluto's own runtime internals;
-    # nobody ever meant to ask about PlutoRunner.Base.get.
-    (references = sort!(String[string(r) for r in node.references
-                              if !startswith(string(r), "PlutoRunner")]),
-     upstream = bylabel(Pluto.upstream_cells_map(c, nb.topology)),
+    (upstream = bylabel(Pluto.upstream_cells_map(c, nb.topology)),
      downstream = bylabel(Pluto.downstream_cells_map(c, nb.topology)))
 end
 
