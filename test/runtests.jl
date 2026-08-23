@@ -127,6 +127,18 @@ const S = "test"
     @test isempty(call("list", Dict("session" => S)))   # nothing open yet
 end
 
+@testset "every notebook-taking tool refuses a bad notebook ref cleanly" begin
+    # Same property, one level down: a valid session but a `notebook` ref that
+    # doesn't match anything open must fail at notebook resolution, before
+    # any other (possibly required, possibly absent) argument is touched.
+    for tool in P.ALL_TOOLS
+        any(p -> p.name == "notebook", tool.parameters) || continue
+        r = call(tool.name, Dict("session" => S, "notebook" => "nonexistent-xyz.jl"))
+        @test r.error
+        @test occursin("no open notebook", r.message)
+    end
+end
+
 @testset "every tool refuses a nonexistent session cleanly" begin
     # Every handler resolves the session (or notebook) before touching any
     # other argument, so this must produce the same clean "no session"
