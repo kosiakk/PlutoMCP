@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "pluto": {
+    "notebook": {
       "command": "julia",
       "args": [
         "--project=${CLAUDE_PLUGIN_ROOT}",
