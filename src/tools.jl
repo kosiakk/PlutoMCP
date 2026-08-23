@@ -33,8 +33,13 @@ macro safely(body)
     end
 end
 
+# Long enough that an ordinary cell finishes inside the call, short enough that
+# a slow one does not hold the agent up. An explicit 0 is the deliberate
+# fire-and-forget, for authoring a run of cells before reading any of them.
+const DEFAULT_WAIT = 0.1
+
 _sess(args) = get(args, "session", "default")
-_wait(args, default=0.0) = Float64(something(get(args, "wait_seconds", default), default))
+_wait(args, default=DEFAULT_WAIT) = Float64(something(get(args, "wait_seconds", default), default))
 _nb(args) = _notebook(_sess(args); ref=get(args, "notebook", nothing))
 
 """Resolve the `cells` argument, or the whole notebook when it is absent."""
@@ -53,8 +58,8 @@ const NOTEBOOK_PARAM = ToolParameter(name="notebook", type="string",
     description="Which open notebook, if the session has more than one: a notebook_id or a path (a basename is usually enough). Omit for the current one. See list.",
     required=false)
 
-wait_param(default=0) = ToolParameter(name="wait_seconds", type="number",
-    description="Seconds to wait before returning the record. The record comes back on completion, on a new error, or on expiry — whichever is first. Expiry shows as status=\"calculating\"; nothing is cancelled.",
+wait_param(default=DEFAULT_WAIT) = ToolParameter(name="wait_seconds", type="number",
+    description="Seconds to wait before returning the record (default $default). The record comes back on completion, on a new error, or on expiry — whichever is first. Expiry shows as status=\"calculating\"; nothing is cancelled. Pass 0 to fire and forget, and raise it for work you expect to be slow.",
     required=false, default=default)
 
 # Pluto's centered, ~700px-wide column is a good default for prose and a bad one
@@ -411,14 +416,14 @@ The notebook object is read directly, so a human's browser edits are already in 
     parameters=[
         ToolParameter(name="cells", type="array", description="Cell references to report on. $CELL_REF_DOC Omit for all of them.", required=false),
         ToolParameter(name="tree", type="boolean", description="Add each reported cell's references, and its upstream/downstream cells", required=false, default=false),
-        wait_param(0),
+        wait_param(),
         ToolParameter(name="since", type="number", description="A `timestamp` from an earlier record: report only cells changed or re-run after it. Copy the value, never compute it.", required=false),
         NOTEBOOK_PARAM,
         SESSION_PARAM,
     ],
     handler=(args -> @safely begin
         name = _sess(args); nb = _nb(args)
-        finished, waited, _ = wait_for_idle(nb; wait_seconds=_wait(args, 0.0))
+        finished, waited, _ = wait_for_idle(nb; wait_seconds=_wait(args))
         since = get(args, "since", nothing)
         labels = cell_labels(nb)
         cells = haskey(args, "cells") && args["cells"] !== nothing ?

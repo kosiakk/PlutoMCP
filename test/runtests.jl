@@ -195,12 +195,17 @@ end
         @test !(p.name in banned)
     end
 
-    # Everything that runs or waits takes wait_seconds, and nothing else does.
+    # Everything that runs or waits takes wait_seconds, nothing else does, and
+    # they all carry the SAME default -- one value flowing to one function.
     waits = Set(["open", "edit", "run", "read", "bond"])
     for tool in P.ALL_TOOLS
-        has = any(p -> p.name == "wait_seconds", tool.parameters)
-        @test has == (tool.name in waits)
+        w = [p for p in tool.parameters if p.name == "wait_seconds"]
+        @test (length(w) == 1) == (tool.name in waits)
+        isempty(w) || @test only(w).default == P.DEFAULT_WAIT
     end
+    # Not 0: a fast cell should converge inside the call, so the common case
+    # comes back complete without a follow-up read.
+    @test P.DEFAULT_WAIT > 0
 
     # Ten tools, exactly these.
     @test Set(keys(TOOLS)) == Set(["start", "open", "list", "edit", "run",
@@ -384,8 +389,8 @@ end
                       "wait_seconds" => 60))
     @test length(call("read", Dict("session" => S)).cells) == before
 
-    # wait_seconds=0 returns before the result is in, so the flag cannot fire:
-    # deletion at return time is the entire contract.
+    # An explicit wait_seconds=0 returns before the result is in, so the flag
+    # cannot fire: deletion at return time is the entire contract.
     z = call("edit", Dict("session" => S, "mode" => "insert",
                           "code" => "1 + 1", "delete_on_success" => true, "wait_seconds" => 0))
     @test z.status == "calculating"
