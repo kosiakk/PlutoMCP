@@ -1,6 +1,6 @@
 ---
 name: pluto-seeing
-description: How to actually look at data in a Pluto notebook without wasting context — tree sketches, statistics cells, UnicodePlots for shape, and AsPNG only when raster truth matters. Use when inspecting arrays, tables or plots through the pluto MCP tools.
+description: How to actually look at data in a Pluto notebook without wasting context — tree sketches, statistics cells, histogram counts, and the picture itself when shape is the question. Use when inspecting arrays, tables or plots through the pluto MCP tools.
 ---
 
 # Seeing data in a Pluto notebook
@@ -40,24 +40,45 @@ Good probes: `extrema`, `quantile`, `mean`/`std`, `count(isnan, x)`,
 `sum(ismissing, col)`, `describe(df)`, `combine(groupby(df, :region), nrow)`,
 `countmap`. Each returns a handful of numbers that answer a specific question.
 
-## 3. UnicodePlots, for shape
+## 3. The picture, when shape is the question
 
-When the question is *what does the distribution look like* — not a number but
-a shape — a text plot costs 1–2 KB and no image tokens at all.
+When the question is *what does this look like* — not a number but a shape —
+ask for the figure. `output` on a cell whose value is a plot renders it and
+returns the image:
 
 ```
-edit(mode="insert", delete_on_success=true, wait_seconds=30,
-     code="using UnicodePlots; histogram(residuals; nbins=12, canvas=BlockCanvas)")
+output(cell="residual_fit")
 ```
 
-Use `histogram`, or pass `canvas=BlockCanvas` to `lineplot`/`scatterplot`. The
-default Braille canvas packs more dots per character, which is exactly wrong
-here: braille renders as dense unreadable glyphs in a text payload, while block
-characters stay legible.
+Pluto stores one rendered MIME per cell and prefers SVG, which is markup no
+client can display; `output` asks the figure's own library for a PNG instead.
+No cell, no round trip.
 
-### Worked example
+**A picture is cheaper than a text plot of the same data.** Vision input is
+billed by pixel area, roughly `width × height / 750`, and file size is
+irrelevant — a 20 KB PNG at 600×400 is ~320 tokens, 300×200 is ~80. The same
+plot as a braille canvas is ~5 KB of text and on the order of 2000 tokens,
+because braille codepoints tokenize badly and every blank `⠀` is a character.
+Six times the cost to see less.
 
-This is a real `histogram(x; nbins=12, canvas=BlockCanvas)` result:
+For a figure that is not a cell's own value — one built inside a `let`, or a
+subplot — `PlutoMCP.AsPNG(fig)` in a `delete_on_success` cell renders anything
+showable. It is injected into every notebook workspace, and it exists because
+Pluto's MIME preference is not the agent's.
+
+Other formats (WebP, PDF) are a cell calling the plotting library's own save
+function, never a tool feature.
+
+## 4. Text plots, rarely
+
+A unicode canvas is worth it in one case: the notebook has **no** plotting
+library and the question does not justify adding one. `using UnicodePlots`
+makes Pluto install the package and write it into the notebook file's
+environment — permanently, even after the probe cell is deleted. That is a real
+edit to somebody's notebook in exchange for a picture you can barely read.
+
+The exception is `histogram`, which prints counts beside the bars. That is data
+with a shape attached rather than a rendering, and it reads well:
 
 ```
                 ┌                                        ┐
@@ -86,34 +107,18 @@ goes down, stays down for two bins, then rises again by a factor of nine. The
 next probe follows from the picture — `count(>(3.5), x)` to size it exactly,
 then find what distinguishes those rows.
 
-Note what the picture was *not* needed for: the mean, which would have averaged
-the two populations into a number describing neither. Shape questions get
-plots; quantity questions get statistics.
-
-## 4. AsPNG, last
-
-Only when raster truth matters: fine detail, colour, or checking what the human
-is actually looking at.
-
-```
-edit(mode="insert", delete_on_success=true, wait_seconds=60,
-     code="PlutoMCP.AsPNG(fig)")
-```
-
-`AsPNG` is injected into every notebook workspace. It has to exist because
-Pluto stores **one** rendered MIME per cell, chosen by its own preference —
-SVG for Plots, HTML for some backends — and `output` never re-executes a cell.
-So PNG bytes exist only if some cell rendered them, and `AsPNG(fig)` is the
-cell that does. Calling `output` on a plotting cell whose stored format is SVG
-gives you 100 KB of markup no client can display.
-
-Other formats (WebP, PDF) are a cell calling the plotting library's own save
-function, never a tool feature.
+Note what it was *not* needed for: the mean, which would have averaged the two
+populations into a number describing neither. And note that every word of that
+reading came from the counts, not from the bars — which is why
+`fit(Histogram, x, edges).weights` from StatsBase answers the same question
+with no plotting package at all, and belongs in step 2.
 
 ## What not to do
 
 - Do not print an array to inspect it. Sketch, then statistics, then a plot.
 - Do not ask for a plot when a number would answer the question.
+- Do not install a plotting package to look at a shape. The dependency outlives
+  the probe cell, in somebody else's notebook file.
 - Do not leave probe cells behind: `delete_on_success=true`, and clean up the
   ones that errored.
 - Do not use `println` in a loop to trace a computation. `@info` with key-value

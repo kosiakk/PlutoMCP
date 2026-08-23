@@ -63,10 +63,11 @@ definition of a global per cell**.
 ## Throwaway cells
 
 **Every capability question has the same answer: write a cell.** Probing a
-value, reading a docstring, computing a statistic, rendering a plot, expanding a
-container — all cells. There is no second evaluation path, and that is
-deliberate: a probe that runs somewhere invisible is a probe the human reviewing
-your work cannot see.
+value, reading a docstring, computing a statistic, expanding a container — all
+cells. (Looking at a plot is the one exception: `output` on the cell renders
+the figure and returns the picture.) There is no second evaluation path, and
+that is deliberate: a probe that runs somewhere invisible is a probe the human
+reviewing your work cannot see.
 
 Use `delete_on_success=true` on an insert:
 

@@ -99,10 +99,10 @@ Prefer `@info` with key-value pairs over `println`: structured entries survive t
 How the agent looks at data, cheapest first:
 1. The tree sketch in the record, for structure.
 2. Throwaway statistics cells, for numbers: exact answers cost less than reading raw values.
-3. UnicodePlots in a `delete_on_success` cell, for shape: 1-2 KB of text, no image tokens. `histogram` or `BlockCanvas` over the Braille default.
-4. `AsPNG(fig)` last, when raster truth matters: fine detail, color, verifying what the human sees.
+3. The picture, when shape is the question: `output` on the plotting cell. Vision input is billed by pixel area (~`w*h/750`), not file size — 600x400 is ~320 tokens, where the same plot as a braille canvas is ~5 KB of text and ~2000 tokens. Cheaper to see more.
+4. A text plot only when the notebook has no plotting library and the question does not justify adding one: `using UnicodePlots` writes a dependency into the notebook file that outlives the probe cell. `histogram` is the exception worth having, because it prints counts beside the bars — and `fit(Histogram, x, edges).weights` gives those counts with no package at all.
 
-`AsPNG(fig)` is a wrapper whose only `show` method is `image/png`. It must exist: Pluto stores one rendered MIME per cell by its own preference (SVG for Plots, HTML for some backends), `output` never re-executes, so PNG bytes exist only if a cell renders them.
+`AsPNG(fig)` is a wrapper whose only `show` method is `image/png`. It must exist: Pluto stores one rendered MIME per cell by its own preference (SVG for Plots, HTML for some backends). `output` uses it on the agent's behalf for a cell whose value is a figure -- named, idle notebook, PNG-capable library, else it returns the shape and a hint. `AsPNG` in a cell covers the rest: a figure built inside a `let`, or one the notebook never bound to a name.
 Format conversions are probe cells calling the plotting library directly.
 
 ## Safety and transport
@@ -114,7 +114,7 @@ Format conversions are probe cells calling the plotting library directly.
 ## Packaging and positioning
 
 - Julia package, MIT licensed, registry-eligible, client-agnostic MCP server underneath.
-- Claude Code plugin on top: auto-configured server plus two skills, `pluto-workflow` (the loop, the delete_on_success pattern, record semantics) and `pluto-seeing` (the hierarchy with a worked UnicodePlots example serving as readability fixture). No hooks.
+- Claude Code plugin on top: auto-configured server plus two skills, `pluto-workflow` (the loop, the delete_on_success pattern, record semantics) and `pluto-seeing` (the hierarchy, with a worked histogram example serving as readability fixture). No hooks.
 - Niche: existing Julia MCP servers are REPL-shaped scratchpads (AgentREPL, MCPRepl, Kaimon). PlutoMCP is notebook-as-reviewable-artifact. The human-review channel and reproducible file are the point, not interactive evaluation.
 
 ## Design discipline

@@ -133,9 +133,11 @@ bytes, and human-edit history.
 
 Probing a value and reading a docstring are cells (`edit` with
 `delete_on_success=true`); dependencies are `read(tree=true)`; waiting is
-`read(wait_seconds=N)`; a picture is `PlutoMCP.AsPNG(fig)` in a cell, using a
-helper injected into every workspace. None of those is a tool, and SPEC.md
-records why.
+`read(wait_seconds=N)`. A picture is `output` on the plotting cell — Pluto
+stores SVG, which no client can show, so the figure is asked for a PNG
+instead; for a figure that is not a cell's own value, `PlutoMCP.AsPNG(fig)` in
+a cell does the same from inside the notebook, using a helper injected into
+every workspace. None of those is a tool, and SPEC.md records why.
 
 ## One record
 
