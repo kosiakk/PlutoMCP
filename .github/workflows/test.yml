@@ -13,24 +13,24 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        julia-version: ["1.10", "1"]
     steps:
       - uses: actions/checkout@v4
 
       # The committed Manifest.toml is pinned to one Julia version (see its
-      # own julia_version field) for local-dev reproducibility. Instantiating
-      # it under a DIFFERENT version in the matrix fails outright -- JLL
-      # packages resolve different artifacts per Julia version, and Pkg
-      # refuses a manifest whose pinned artifacts it cannot locate. Each job
-      # resolves its own from Project.toml's compat bounds instead.
+      # own julia_version field) for local-dev reproducibility; resolve fresh
+      # in CI instead of instantiating it, so a future Julia bump on the dev
+      # machine can't silently break this job.
       - run: rm -f Manifest.toml
 
       - uses: julia-actions/setup-julia@v2
         with:
-          version: ${{ matrix.julia-version }}
+          version: "1"   # latest stable. NOT matrixed against "1.10": the
+          # Project.toml declares `julia = "1.10"` compat, but its stdlib
+          # compat bounds (Dates/Logging/Sockets/UUIDs = "1.11.0") only allow
+          # the stdlib versions Julia 1.11+ ships -- 1.10's sysimage carries
+          # older ones it cannot substitute. The declared minimum does not
+          # currently install on 1.10; that is a Project.toml decision for
+          # the maintainer, not something to paper over here.
 
       - uses: julia-actions/cache@v2
 
