@@ -212,7 +212,7 @@ pluto_stop = MCPTool(
     name="stop",
     description="""Stop things, narrowing with each argument.
 
-No arguments: shut the whole session down — server, notebook workers, spill files. `notebook`: shut down that one notebook. `notebook` and `cell`: interrupt what the notebook is evaluating right now, the same as the browser's stop button. A cell cannot interrupt itself, which is why that last one is a tool.
+No arguments: shut the whole session down — server, notebook workers, spill files. Harmless to call when nothing is running: it reports `stopped="nothing"` rather than an error. `notebook`: shut down that one notebook. `notebook` and `cell`: interrupt what the notebook is evaluating right now, the same as the browser's stop button. A cell cannot interrupt itself, which is why that last one is a tool.
 
 An interrupted cell reports `unrun` — you asked for the stop, so its error is not news. Pluto escalates a stop that is ignored into killing the worker, and then every value in the notebook is gone: the cell says so with an `error`, and your next `edit` re-runs the notebook.""",
     parameters=[
@@ -223,6 +223,16 @@ An interrupted cell reports `unrun` — you asked for the stop, so its error is 
         if get(args, "notebook", nothing) === nothing
             get(args, "cell", nothing) === nothing ||
                 error("stop with a cell also needs a notebook")
+            # Idempotent and honest: with nothing running, `session()`'s
+            # refusal used to surface here as `error=true`, which reads as
+            # "something is wrong" for what is actually the ordinary case of
+            # an agent's last call, or a client retrying a stop that already
+            # landed. There being nothing IN THIS PROCESS to stop is not the
+            # same claim as "no Pluto server exists anywhere" -- see the
+            # docstring's silence on that -- but it is the one this call can
+            # honestly make.
+            SERVER[] === nothing && return _ok((stopped="nothing",
+                note="no server was running in this process"))
             stop_session()
             return _ok((stopped="server",))
         end
