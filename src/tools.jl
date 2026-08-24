@@ -390,15 +390,40 @@ function _remove_cell!(nb, c)
     return nothing
 end
 
+const BOND_VALUE_DESCRIPTION = "New value, as the JSON TYPE the widget holds — a number for a slider (7, not \"7\"), true/false for a checkbox, a string only for a textual widget. Sent as given, with no coercion."
+
 pluto_bond = MCPTool(
     name="bond",
     description="Set an `@bind`-ed variable and re-run its dependents, the way moving the widget in the browser would. Only for variables introduced with `@bind name widget`.",
+    # `parameters` stays populated -- with `value` typed "string", same as
+    # ever -- purely as the introspection shape the test suite's
+    # vocabulary/required-argument checks walk (see "the vocabulary has no
+    # synonyms"). It is NOT what a client sees: `input_schema` below takes
+    # precedence for the wire schema, and is where the real fix lives.
     parameters=[
         ToolParameter(name="name", type="string", description="The bound variable's name, as written in @bind name widget", required=true),
-        ToolParameter(name="value", type="string", description="New value, as the JSON TYPE the widget holds — a number for a slider (7, not \"7\"), true/false for a checkbox, a string only for a textual widget. Sent as given, with no coercion.", required=true),
+        ToolParameter(name="value", type="string", description=BOND_VALUE_DESCRIPTION, required=true),
         wait_param(),
         NOTEBOOK_PARAM,
     ],
+    # `value` has no `type` constraint on purpose. A ToolParameter's schema
+    # always carries a JSON Schema "type", and the honest one for `value`
+    # depends on the widget -- a slider wants the JSON number, a checkbox a
+    # boolean, only a textual widget a string. Declaring it "string" (as
+    # `parameters` above does) makes every non-textual widget unsendable by a
+    # schema-conforming client, even though the handler has always accepted --
+    # and always passed through untouched -- whatever JSON value arrives.
+    input_schema=Dict(
+        "\$schema" => "https://json-schema.org/draft/2020-12/schema",
+        "type" => "object",
+        "properties" => Dict(
+            "name" => Dict("type" => "string", "description" => "The bound variable's name, as written in @bind name widget"),
+            "value" => Dict("description" => BOND_VALUE_DESCRIPTION),
+            "wait_seconds" => Dict("type" => "number", "description" => wait_param().description, "default" => DEFAULT_WAIT),
+            "notebook" => Dict("type" => "string", "description" => NOTEBOOK_PARAM.description),
+        ),
+        "required" => ["name", "value"],
+    ),
     handler=(args -> @safely begin
         s = session(); nb = _nb(args)
         sym = Symbol(String(args["name"]))
@@ -414,13 +439,48 @@ pluto_bond = MCPTool(
         # string distinguishes "the number 7, sent as a string" from "the text
         # 7, typed into a text field", so the value's TYPE is the agent's to get
         # right -- see the parameter description.
-        nb.bonds[sym] = Pluto.BondValue(args["value"])
-        finished, waited, touched = await_run(nb, Pluto.Cell[]; wait_seconds=_wait(args)) do
-            # NOT run_async=true: set_bond_values_reactive forwards kwargs
-            # straight into run_reactive_async!, so this is the only way to get
-            # a call that is genuinely done when it returns.
+        #
+        # nb.bonds is written before the reactive run below validates the
+        # value -- transform_bond_value runs downstream, inside that run, and
+        # can reject it (wrong type, out of range, whatever the widget
+        # decides). Keep what was there so a rejected value doesn't stay
+        # installed and poison every bond call after it.
+        had_previous = haskey(nb.bonds, sym)
+        previous = had_previous ? nb.bonds[sym] : nothing
+        # NOT run_async=true: set_bond_values_reactive forwards kwargs straight
+        # into run_reactive_async!, so this is the only way to get a call that
+        # is genuinely done when it returns.
+        set_and_run() = await_run(nb, Pluto.Cell[]; wait_seconds=_wait(args)) do
             Pluto.set_bond_values_reactive(; session=s.session, notebook=nb,
                 bound_sym_names=Symbol[sym], run_async=false)
+        end
+        nb.bonds[sym] = Pluto.BondValue(args["value"])
+        finished, waited, touched = try
+            set_and_run()
+        catch e
+            # A defensive rollback: nothing observed throws here (see below),
+            # but a raw exception is exactly as much "the bad value stayed
+            # installed" as a run that reports one.
+            had_previous ? (nb.bonds[sym] = previous) : delete!(nb.bonds, sym)
+            rethrow()
+        end
+        # Pluto's own transform_bond_value does not raise a rejection as a
+        # Julia exception -- it catches one and hands the bound variable a
+        # sentinel value instead (PlutoRunner/bonds.jl), which surfaces here as
+        # a cell in `touched` gone to "error" (using that sentinel where the
+        # widget's real value was expected). Either way a rejected value must
+        # not stay in `nb.bonds`: put back what was there and re-run so the
+        # notebook lands exactly where it started, rather than leaving the
+        # cascade broken until someone happens to resend a good value.
+        if any(c -> c isa Pluto.Cell && cell_status(c) == "error", touched)
+            if had_previous
+                nb.bonds[sym] = previous
+                finished, waited, touched = set_and_run()
+                error("bond \"$(args["name"])\" rejected value $(repr(args["value"])) -- restored the previous value and re-ran its dependents")
+            else
+                delete!(nb.bonds, sym)
+                error("bond \"$(args["name"])\" rejected value $(repr(args["value"])) -- no earlier bond value to restore; re-send the @bind cell's own code to reset it to the widget's default")
+            end
         end
         _ok(record(nb, touched, finished, waited; bound=String(args["name"])))
     end),

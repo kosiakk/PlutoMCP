@@ -259,6 +259,19 @@ end
     @test !any(p -> p.name == "session", Iterators.flatten(t.parameters for t in P.ALL_TOOLS))
 end
 
+@testset "bond's wire schema does not constrain value to a string" begin
+    # `bond`'s `parameters` still types `value` as "string" (see the vocabulary
+    # test above, which walks that shape); a schema-conforming client never
+    # sees it, because `input_schema` -- which MCPTool prefers whenever it is
+    # given -- overrides it. A number, a boolean, and an array are all valid
+    # here; only "string" alone would be wrong, since that is exactly the
+    # constraint that made every non-textual widget unreachable.
+    value_schema = P.pluto_bond.input_schema["properties"]["value"]
+    @test !haskey(value_schema, "type") ||
+          value_schema["type"] != "string"
+    @test P.pluto_bond.input_schema["required"] == ["name", "value"]
+end
+
 # ---------------------------------------------------------------------------
 # Server-backed. One Pluto server for most of it: starting one is slow.
 # ---------------------------------------------------------------------------
@@ -1246,6 +1259,63 @@ end
     for n in ("shout", "greeting", "doubled_bond", "slider")
         call("edit", Dict("cell" => n, "code" => "",
                           "wait_seconds" => 60))
+    end
+end
+
+@testset "bond: a rejected value is rolled back, not left installed" begin
+    # A widget that rejects one particular value, the way PlutoUI's Slider
+    # rejects an out-of-range index -- reproduced with AbstractPlutoDingetjes
+    # directly so the test needs no extra notebook dependency beyond it.
+    # Pluto's own transform_bond_value (PlutoRunner/bonds.jl) catches whatever
+    # this throws and hands the bound variable a sentinel value instead of
+    # propagating the exception, so the rejection shows up downstream as a
+    # cell in `error` -- not as this `bond` call throwing directly.
+    call("edit", Dict("wait_seconds" => 300, "code" =>
+        "begin\n" *
+        "\timport AbstractPlutoDingetjes\n" *
+        "\tstruct _PickyBond\n\t\treject::Int\n\tend\n" *
+        "\tBase.show(io::IO, ::MIME\"text/html\", ::_PickyBond) = print(io, \"<input type=range>\")\n" *
+        "\tAbstractPlutoDingetjes.Bonds.transform_value(w::_PickyBond, from_js) =\n" *
+        "\t\tfrom_js == w.reject ? error(\"rejected: \$from_js\") : from_js\n" *
+        "end"))
+    call("edit", Dict("code" => "picky = @bind picky _PickyBond(13)", "wait_seconds" => 60))
+    call("edit", Dict("code" => "picky_doubled = picky * 2", "wait_seconds" => 60))
+
+    good = call("bond", Dict("name" => "picky", "value" => 5, "wait_seconds" => 60))
+    @test good.status == "success"
+    @test any(c -> c.name == "picky_doubled" && c.output == "10", good.cells)
+    @test P._notebook().bonds[:picky].value == 5
+
+    # The rejected call errors...
+    bad = call("bond", Dict("name" => "picky", "value" => 13, "wait_seconds" => 60))
+    @test bad.error
+    # ...and does not leave the bad value installed: a fresh read shows the
+    # notebook back where the last GOOD call left it, dependents included.
+    @test P._notebook().bonds[:picky].value == 5
+    @test cell_output("picky_doubled") == "10"
+
+    # Not poisoned: a later good value still works normally.
+    again = call("bond", Dict("name" => "picky", "value" => 9, "wait_seconds" => 60))
+    @test again.status == "success"
+    @test any(c -> c.name == "picky_doubled" && c.output == "18", again.cells)
+
+    # A SECOND, never-before-bonded variable, rejected on its very first
+    # `bond` call: there is no previous nb.bonds entry to restore, only the
+    # earlier-branch's absence to put back -- the message says so rather than
+    # claiming a rollback that did not happen. A dependent cell is needed here
+    # too: with nothing reading `novel`, `where_referenced` finds no cell to
+    # re-run, the sentinel value from the rejected transform touches nothing,
+    # and the rejection would go unnoticed.
+    call("edit", Dict("code" => "novel = @bind novel _PickyBond(4)", "wait_seconds" => 60))
+    call("edit", Dict("code" => "novel_view = novel * 1", "wait_seconds" => 60))
+    @test !haskey(P._notebook().bonds, :novel)
+    first_try = call("bond", Dict("name" => "novel", "value" => 4, "wait_seconds" => 60))
+    @test first_try.error
+    @test occursin("no earlier bond value", first_try.message)
+    @test !haskey(P._notebook().bonds, :novel)
+
+    for n in ("novel_view", "novel", "picky_doubled", "picky", "_PickyBond")
+        call("edit", Dict("cell" => n, "code" => "", "wait_seconds" => 60))
     end
 end
 
