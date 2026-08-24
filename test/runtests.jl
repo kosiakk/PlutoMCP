@@ -268,11 +268,16 @@ end
     # not a KeyError from some other argument, and not a crash. Every handler
     # resolves the server before touching anything else, so this is uniform.
     for tool in P.ALL_TOOLS
-        tool.name == "start" && continue        # start CREATES it
+        tool.name in ("start", "stop") && continue   # start CREATES it, stop is idempotent
         r = call(tool.name)
         @test r.error
         @test occursin("no server running", r.message)
     end
+
+    # stop is the one exception: calling it with nothing to stop is the
+    # ordinary case (an agent's last call, a retry), not a failure -- see
+    # "stop with nothing running is idempotent, not an error" below.
+    @test call("stop").stopped == "nothing"
 
     r = call("start")
     @test occursin("localhost:", r.host)
@@ -1355,5 +1360,28 @@ end
     # ...and with no arguments, everything.
     @test call("stop", Dict()).stopped == "server"
     @test call("read", Dict()).error
-    @test call("stop", Dict()).error      # stopping twice is refused
+    # Stopping twice is not refused: the second call finds nothing running and
+    # says so plainly, rather than making the caller treat "already stopped"
+    # as a failure. See "stop with nothing running is idempotent, not an
+    # error" for the dedicated coverage.
+    again = call("stop", Dict())
+    @test !haskey(again, :error)
+    @test again.stopped == "nothing"
+end
+
+@testset "stop with nothing running is idempotent, not an error" begin
+    # SERVER[] can end up nothing while a Pluto server this same process
+    # started is, in principle, still alive elsewhere (see issue #47) -- but
+    # from THIS process's point of view, calling stop with nothing recorded
+    # must read as "there was nothing to do", never as "something went wrong".
+    @test P.SERVER[] === nothing
+    r = call("stop", Dict())
+    @test !haskey(r, :error)
+    @test r.stopped == "nothing"
+    @test haskey(r, :note)
+
+    # Idempotent under repetition, not just once.
+    @test call("stop", Dict()).stopped == "nothing"
+
+    call("start")   # the rest of the suite needs one
 end
