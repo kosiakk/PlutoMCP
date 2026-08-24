@@ -56,6 +56,16 @@ A first `using Plots` takes minutes to install and compile; blocking on it buys 
 The result arrives in the next record, or in `read(since=…)` when you want it.
 Pass `0` to fire and forget, which is how you author a run of cells before reading any of them.
 
+## Waiting on a long run without blocking yourself
+
+`read(wait_seconds=N)` blocks your own turn for up to `N` seconds — there is no MCP-level way around that, which is why the default is small and `0` exists for fire-and-forget. If you want to fire a batch of edits and then genuinely do something else — another tool, another notebook, plain reasoning — while a long cell runs, don't raise `N` to sit through it. Run `bin/pluto_wait.sh <notebook-id> [timeout-seconds]` in the background instead (POSIX only — macOS, Linux; on Windows, fall back to the short-`wait_seconds` loop). `<notebook-id>` is the `id=` query parameter in the URL `open` returned.
+
+```
+Bash(command="bin/pluto_wait.sh <notebook-id> 300", run_in_background=true)
+```
+
+It shows up in your background task list and notifies you when it returns, the same as any other long `Bash` job — keep working in the meantime. Exit 0 means something changed; anything else (timeout, or a real problem) means no signal arrived, so decide for yourself whether to wait again or move on. Either way it's a **nudge, not an answer**: always follow it with a real `read(since=<your last timestamp>)` — a wake can fire immediately if changes piled up while nobody was listening, which is harmless, just re-issue the wait if `read` shows nothing new yet. If you give up on it, just kill the background job: the script holds no lock and needs no cleanup.
+
 ## Reactivity changes how you edit
 
 Pluto runs cells in **dependency order**, not top to bottom, and allows **one definition of a global per cell**.

@@ -173,6 +173,15 @@ Stated once in the server description, elaborated in the plugin skill: edit, the
 `delete_on_success` cells for anything not worth keeping.
 Prefer `@info` with key-value pairs over `println`: structured entries survive truncation individually, print spam loses its middle.
 
+## The wake FIFO
+
+MCP itself has no server push the agent's host will act on (see "Explored and rejected"), but client and server already share a machine, and Pluto's own `on_event` hook already knows the instant anything changes — a human edit or a bare run finishing alike (`StateChangeEvent`, `embedded.jl`). So the same hook also pokes a POSIX named pipe at `wake_path(nb)` (`<tempdir>/plutomcp/<notebook_id>/wake`) if one is there (`_poke_wake!`).
+PlutoMCP never creates that file — the agent does, with `mkfifo`, only when it actually wants to wait — so a notebook nobody is watching carries no extra state, and the server's write never blocks: opening a FIFO read+write cannot block on POSIX (the fd is its own other end), so `_poke_wake!` costs nothing even with no reader attached.
+
+This is not a second information channel — the FIFO carries one byte, never notebook content — it is a way to let a *backgrounded shell command* block instead of the agent's own MCP call blocking. `bin/pluto_wait.sh <notebook-id> [timeout]` is that command: `mkfifo`, open read+write, read exactly one byte with a timeout, exit 0 if it arrived. Run it via the host's own background-task mechanism (which, unlike an MCP tool call, genuinely does free the agent — see "Explored and rejected") and treat exit 0 as a nudge to call the real `read`, never as the answer itself — exactly one byte crosses this channel, never notebook content. Delivery is at-least-once and a stale or missed wake is harmless for the same reason `since` dedup is: the next real `read` is what actually answers the question. The script holds no lock and does no cleanup on exit, so the agent giving up on it is just killing the background job.
+
+POSIX only. No Windows equivalent exists yet (Windows named pipes are a different API entirely); on Windows the short-`wait_seconds` poll loop is what's left.
+
 ## Seeing hierarchy
 
 How the agent looks at data, cheapest first: the record's sketch, for structure; throwaway statistics cells, for numbers (an exact answer costs less than the raw data it came from); the picture, when shape is the question — `output(mime="image/png")`, billed by pixel area (~`w*h/750`), so a 600x400 plot is ~320 tokens against ~2000 for the same plot as a braille canvas; and `fit(Histogram, x, edges).weights` for a distribution, which needs no plotting package at all.
@@ -209,6 +218,26 @@ When a capability seems missing, the first question is always: is it a cell?
 
 A post-mortem, so these are not reopened without new evidence.
 Each entry names what would count as new evidence.
+
+**Server push instead of polling** — a notification when a run finishes or a human edits, so the agent is not the one asking.
+Nothing in JSON-RPC stops a server writing a notification over the same stdio pipe at any time; the gap is on the other end, and it is a gap in both hosts this package targets.
+Claude Code's agent loop only acts on messages that arrive inside a running turn, so a notification landing while the agent is idle has nowhere to go — a 2026 feature request asking for exactly that, unsolicited server-to-client messages, was closed not-planned (`anthropics/claude-code#36665`).
+Copilot CLI is narrower still: its MCP client speaks tools only, with resources and prompts an open request (`github/copilot-cli#1518`) and sampling a closed one with no shipped support (`github/copilot-cli#1748`) — consistent with GitHub's own docs, which describe Copilot CLI's MCP support without listing resources, prompts, sampling, or subscriptions at all.
+`sampling/createMessage`, the one spec mechanism that hands a prompt straight to the client's own LLM, is unshipped on both clients (Claude Code: `anthropics/claude-code#1785`, still open) — and the 2026-07-28 MCP revision deprecated sampling regardless, replacing server-initiated calls with synchronous multi-round-trip requests (`resultType: "input_required"`), not asynchronous push.
+Reopen only once a host we actually ship for turns an idle-time server notification into a new agent turn; until then `read(wait_seconds=…)` is the only channel that reaches the agent *over MCP* — "The wake FIFO" above is not a reopening of this: it carries no notebook content, only a wake byte to a shell command, precisely because MCP push stays closed.
+
+**A long `wait_seconds` as a way to free the agent for other work** — batch every `edit` at `wait_seconds=0`, then make one `read(wait_seconds=100)` and let the agent use other tools until it returns.
+It does not: a single stdio server processes one JSON-RPC message at a time (`ModelContextProtocol.jl`'s `run_server_loop` reads a line, calls the handler, writes the response, only then reads the next line), and Claude Code's own tool loop matches that — an MCP tool call blocks the whole turn until its result arrives, with no `run_in_background` for MCP the way `Bash` has one.
+The interactive escape hatch (a human at the terminal presses Ctrl+B to background a slow MCP call) is not something the agent can invoke on itself, and does not exist in a headless session at all.
+Client-side support for the MCP Tasks extension (SEP-1686), which would let a tool call return a task handle instead of blocking, was requested for Claude Code and closed not-planned (`anthropics/claude-code#18617`); the general ask for an async/background mode on MCP tool calls was closed as a duplicate with no fix landed (`anthropics/claude-code#31427`, `#23611`).
+What genuinely runs concurrently with a pending call is unrelated tool calls the agent already decided to make in the *same* turn — the harness dispatches those together — never new tool calls it thinks up while one is outstanding.
+So the short `wait_seconds` default plus a poll loop (`since=<timestamp>` each time) is not a workaround for missing push — it is what the *MCP call itself* is limited to.
+"The wake FIFO" above is the actual workaround, and it works precisely by not being an MCP call: a backgrounded shell command blocks on a named pipe instead, which Claude Code's `Bash` genuinely does free the agent for.
+Reopen this entry specifically (the MCP tool call itself becoming backgroundable) if Claude Code or Copilot CLI ships client-side Tasks support or an MCP equivalent of `run_in_background`.
+
+**A background subagent polling on the agent's behalf** — spawn a helper (Claude Code's `Agent` tool, `run_in_background=true`) whose whole job is to sit in a `read(wait_seconds=…)` loop and report back, freeing the main agent immediately.
+Blocked twice over, not once. A subagent run with `run_in_background: true` cannot reach MCP tools at all — background subagents lose the main session's MCP tools specifically, closed not-planned (`anthropics/claude-code#13254`). And a *plugin-defined* custom subagent — the kind this package could ship alongside `pluto-workflow` — fares no better even in the foreground: plugin subagents don't inherit `mcpServers` from their own frontmatter, for security reasons, so it would see no PlutoMCP tools until a person manually copied its definition into project or user scope (`anthropics/claude-code#13605`, whose only documented workaround is to use the built-in `general-purpose` agent instead — which still only works in the foreground, i.e. still blocks the caller).
+Reopen if a backgrounded subagent inherits MCP tools, or a plugin-shipped subagent gets its own `mcpServers` without a manual copy-into-scope step.
 
 **Redirecting stdout to protect the transport.**
 `ModelContextProtocol.jl`'s `run_server_loop` writes every response with a bare `println(response)`, using the `stdout` global, so redirecting that global redirects the JSON-RPC itself and the server goes silent.
