@@ -1455,3 +1455,6 @@ end
 
     call("start")   # the rest of the suite needs one
 end
+
+call("start")           # the browser-visibility suite needs one
+include("browser_visibility_test.jl")

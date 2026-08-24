@@ -26,6 +26,32 @@ attached.
 # the only session there can be is a parameter on every tool that never varies.
 const SERVER = Ref{Any}(nothing)
 
+"""
+Serialises PlutoMCP's OWN calls into `Pluto.update_save_run!`, per notebook.
+
+That function mutates `nb.topology` (`old = nb.topology; nb.topology =
+updated_topology(old, nb, cells)`, in Run.jl) BEFORE it ever touches
+`nb.executetoken` -- Pluto's own run lock only wraps the execution that
+follows. Every `edit`/`bond` call here starts its run inside its own `@async`
+task (`await_run`), so `wait_seconds=0` -- fire-and-forget batch authoring,
+the documented way to author several cells at once -- has several of these
+tasks in flight together. Two of them racing on that unlocked mutation is a
+lost update: the loser's topology change is overwritten, and the cell it just
+inserted sits in the notebook forever with no run and no error -- present in
+`cell_inputs`, absent from `cell_results`, invisible to a `read` and to
+anyone watching the browser tab, because nothing ever reports it as anything
+but silently unrun.
+
+One `Token` per notebook, held for the WHOLE of `update_save_run!`, not just
+its topology-mutating prefix: Pluto already serialises the execution that
+follows under `nb.executetoken` ("one cell at a time, in one worker"), so this
+adds no waiting beyond what that promise already implies -- it only makes the
+topology update queue in the same order as the calls that caused it.
+"""
+const RUN_LOCKS = Dict{Base.UUID,Pluto.Token}()
+_run_lock(nb::Pluto.Notebook) = get!(Pluto.Token, RUN_LOCKS, nb.notebook_id)
+_forget_run_lock!(notebook_id::Base.UUID) = (delete!(RUN_LOCKS, notebook_id); nothing)
+
 # Cell-level edits seen via StateChangeEvent, oldest first. A DROPPING buffer:
 # a notification path must never be able to block the thing it observes.
 #
@@ -174,7 +200,7 @@ function stop_session()
     close(s.server)
     SERVER[] = nothing
     # CODE_SENT survives: stopping a server does not empty the agent's context.
-    empty!(CHANGES); empty!(SNAPSHOTS); empty!(REPORTED)
+    empty!(CHANGES); empty!(SNAPSHOTS); empty!(REPORTED); empty!(RUN_LOCKS)
     return nothing
 end
 
@@ -706,7 +732,9 @@ function run_cells!(nb::Pluto.Notebook, cells::Vector{Pluto.Cell}; save::Bool=tr
     # Cheap when nothing restarted, and the only moment we are guaranteed to be
     # asked before a cell runs.
     ensure_renderer!(s.session, nb)
-    isempty(cells) || Pluto.update_save_run!(s.session, nb, cells; run_async=false, save)
+    isempty(cells) || Pluto.withtoken(_run_lock(nb)) do
+        Pluto.update_save_run!(s.session, nb, cells; run_async=false, save)
+    end
     return nb
 end
 
@@ -784,7 +812,7 @@ function await_run(f, nb::Pluto.Notebook, targets; wait_seconds::Real=1.0)
     errored_before = Set(c.cell_id for c in nb.cells if c.errored)
     new_error() = any(c -> c.errored && !(c.cell_id in errored_before), nb.cells)
 
-    task = @async f()
+    task = @async Pluto.withtoken(f, _run_lock(nb))
     t0 = time()
     while !istaskdone(task) && time() - t0 < wait_seconds
         # Surface a failure the moment it happens rather than serving out the
