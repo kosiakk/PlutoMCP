@@ -111,6 +111,41 @@ function _note_change!(nb::Pluto.Notebook)
 end
 
 """
+    _poke_wake!(nb)
+
+Best-effort wake-up nudge for whoever is blocked reading `wake_path(nb)`.
+Fires on every `StateChangeEvent` -- a human edit AND a bare status
+transition (a long run finishing) alike -- from the same hook `_note_change!`
+already runs from, so no second detection path is needed.
+
+Never creates the FIFO: that is the waiter's job (see the `pluto-workflow`
+skill), so a notebook nobody is waiting on carries no extra state and this
+function is a no-op for it. Never blocks the caller either -- opening a FIFO
+read+write cannot block on POSIX (the fd is its own "other end"), and the
+write is one byte, which fits in the kernel pipe buffer even with no reader
+attached yet. Delivery is at-least-once and a spurious wake is harmless: this
+is a nudge to go call `read`, never the answer itself, so losing one changes
+nothing but timing.
+
+Windows has no POSIX FIFO; `isfifo` is simply false there and this quietly
+does nothing until a Windows recipe exists.
+"""
+function _poke_wake!(nb::Pluto.Notebook)
+    path = wake_path(nb)
+    isfifo(path) || return nothing
+    try
+        open(path, "r+") do io
+            write(io, 0x01)
+        end
+    catch
+        # A waiter that closed its end between the isfifo check and the open:
+        # not this hook's job to report, since the agent's own read() is the
+        # source of truth, not this nudge.
+    end
+    return nothing
+end
+
+"""
 Find a free port by binding and releasing it. Pluto's own auto-selection does
 not write the chosen port back onto the session options, so the port has to be
 known before the server starts. Small race, accepted.
@@ -129,7 +164,8 @@ Start a Pluto server in this process. The HTTP server exists only so a human
 can open the notebook in a browser; nothing here talks to it over the network.
 
 Registers an `on_event` hook first, so changes are observable from the moment
-the session exists rather than from the first time someone asks.
+the session exists rather than from the first time someone asks. The same
+hook also pokes each notebook's wake FIFO, if one is waiting (`_poke_wake!`).
 
 Calling this twice stops whatever was already running first -- otherwise
 SERVER would just be overwritten, leaking the previous server and every
@@ -141,7 +177,10 @@ function start_session(; port::Union{Nothing,Int}=nothing)
     options = Pluto.Configuration.from_flat_kwargs(;
         port, launch_browser=false, require_secret_for_access=true,
         on_event = function (e)
-            e isa Pluto.StateChangeEvent && _note_change!(e.notebook)
+            if e isa Pluto.StateChangeEvent
+                _note_change!(e.notebook)
+                _poke_wake!(e.notebook)
+            end
             nothing
         end,
     )

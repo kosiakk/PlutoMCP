@@ -27,7 +27,7 @@ include("tools.jl")
 
 export start_session, stop_session, session, notebook_source, new_cell, cell_labels, resolve_cell,
     cell_info, cells_info, declarations, resolve_cells, record, run_cells!, run_with_deadline, wait_for_idle,
-    await_run, cascade, busy_cells, sketch, truncate_payload, spill_dir,
+    await_run, cascade, busy_cells, sketch, truncate_payload, spill_dir, wake_path,
     build_server, run_server
 
 end # module PlutoMCP

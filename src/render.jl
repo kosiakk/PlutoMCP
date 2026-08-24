@@ -35,6 +35,15 @@ const TAIL_BYTES = 1024
 "Per-notebook directory for text that was too big to inline. Swept on `stop`."
 spill_dir(nb::Pluto.Notebook) = joinpath(tempdir(), "plutomcp", string(nb.notebook_id))
 
+"""
+Path to this notebook's wake FIFO (see the `pluto-workflow` skill's long-wait
+recipe): a POSIX named pipe an agent creates with `mkfifo` and blocks on
+instead of blocking a `read(wait_seconds=…)` MCP call. PlutoMCP never creates
+this file itself -- only pokes it if it is already there (`_poke_wake!` in
+embedded.jl) -- so a notebook nobody is waiting on carries no extra state.
+"""
+wake_path(nb::Pluto.Notebook) = joinpath(spill_dir(nb), "wake")
+
 _slug(s) = replace(String(s), r"[^A-Za-z0-9_.-]" => "_")
 
 """Longest prefix of `s` that fits in `n` bytes without splitting a character."""
