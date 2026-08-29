@@ -302,7 +302,7 @@ A deleted cell comes back in the record with `change: "deleted"`, and with its `
         # parameter, and absence is what says "delete" here.
         ToolParameter(name="code", type="string", description="The cell's text. Empty deletes the cell. Sending a cell's existing text again runs it again.", required=true),
         ToolParameter(name="delete_on_success", type="boolean", description="Delete the cell again if it reaches status=\"success\" before this call returns (default false; new cells only)", required=false, default=false),
-        ToolParameter(name="after", type="string", description="Display position: put this cell right after the referenced one. $CELL_REF_DOC Not the cell being written to — that is `cell`. With no `cell`, positions a new cell instead of appending it. With `cell`, moves an existing one (and re-runs it, the same as resending any code). Not with `before`, and not on a delete.", required=false),
+        ToolParameter(name="after", type="string", description="Display position: put this cell right after the referenced one. $CELL_REF_DOC Not the cell being written to — that is `cell`. With no `cell`, positions a new cell instead of appending it. With `cell`, moves an existing one — sending its code unchanged just moves it, nothing reruns; sending different code moves AND reruns it, same as any edit. Not with `before`, and not on a delete.", required=false),
         ToolParameter(name="before", type="string", description="Display position: put this cell right before the referenced one, otherwise identical to `after`.", required=false),
         wait_param(),
         NOTEBOOK_PARAM,
@@ -390,14 +390,25 @@ A deleted cell comes back in the record with `change: "deleted"`, and with its `
         c = resolve_cell(nb, String(ref))
         position === nothing || position.cell.cell_id != c.cell_id ||
             error("a cell cannot be positioned relative to itself")
+        unchanged = c.code == code
+
         if position !== nothing
             Pluto.withtoken(nb.executetoken) do
                 i = findfirst(==(c.cell_id), nb.cell_order)
                 i === nothing || deleteat!(nb.cell_order, i)
                 _insert_at!(nb.cell_order, c.cell_id, position)
             end
+            if unchanged
+                # A pure move: the code is exactly what it already was, so
+                # nothing about what to compute changed -- only DIFFERENT text
+                # is consent to rerun (see below). Running it anyway just
+                # because its position changed would be a surprise for a cell
+                # with side effects (an RNG, a file append, push!). Persist
+                # the new order and stop; nothing to wait for.
+                Pluto.save_notebook(s.session, nb)
+                return _ok(record(nb, Pluto.Cell[c], true, 0.0))
+            end
         end
-        unchanged = c.code == code
         # A cell that BECOMES prose folds, the way one created as prose does.
         # Only on the transition: a cell that was already prose keeps whatever
         # fold state it has, because that state may be a human's deliberate

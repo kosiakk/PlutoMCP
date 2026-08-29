@@ -436,12 +436,27 @@ end
     call("edit", Dict("code" => "pos_d = 4", "before" => "pos_a", "wait_seconds" => 60))
     @test names() == ["pos_d", "pos_a", "pos_c", "pos_b"]
 
-    # Moving an EXISTING cell: same code, sent again -- which reruns it, the
-    # same as any other resend, but the point here is the reorder.
+    # Moving an EXISTING cell with its code UNCHANGED must not rerun it --
+    # only different code is consent to rerun. Checked against the cell's own
+    # last_run_timestamp, the same signal run_with_deadline itself watches,
+    # not just the returned record's shape.
+    b_id = Base.UUID(only(c.cell_id for c in call("read", Dict("cells" => ["pos_b"])).cells))
+    ts_before_move = P.run_timestamps(P._notebook())[b_id]
     r = call("edit", Dict("cell" => "pos_b", "code" => "pos_b = 2",
                           "after" => "pos_a", "wait_seconds" => 60))
     @test is_record(r)
+    @test r.waited_seconds == 0.0
+    @test P.run_timestamps(P._notebook())[b_id] == ts_before_move
     @test names() == ["pos_d", "pos_a", "pos_b", "pos_c"]
+
+    # A move WITH different code still reruns -- moving is not a shield
+    # against the ordinary edit contract. Order here was [pos_d, pos_a,
+    # pos_b, pos_c]; moving pos_b to AFTER pos_c is a real change, not a
+    # no-op like re-asking for where it already sits.
+    call("edit", Dict("cell" => "pos_b", "code" => "pos_b = 22",
+                      "after" => "pos_c", "wait_seconds" => 60))
+    @test cell_output("pos_b") == "22"
+    @test names() == ["pos_d", "pos_a", "pos_c", "pos_b"]
 
     # A prose "header" cell placed immediately before the code it introduces --
     # it declares nothing, so its "name" is its own cell_id (see cell_labels).

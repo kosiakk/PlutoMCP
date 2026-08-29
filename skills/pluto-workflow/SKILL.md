@@ -96,7 +96,9 @@ Pluto runs cells by dependency, so nothing stops a cell using a name a LATER cel
 `edit`'s `after`/`before` place a cell where a human reads it; `cell` is still which cell you are writing to. Reach for them for LOCAL adjacency — fixing a cell that landed in the wrong spot — not for imposing importance-order on the whole notebook:
 
 - **A `@bind` widget goes immediately before what it drives.** Unlike a function, there is no jump-to-definition from a widget's effect back to the widget — a slider forty cells from its plot is something the reader has to hunt for, where one directly above the plot is self-explanatory.
-- **A markdown cell reads as the header of the code it introduces**, so put it immediately before that cell — `edit(code="md\"\"\"### Fit quality\"\"\"", after="load_data")`, then the code cell `after` that markdown cell. Pluto renders it like a section heading, and it moves with the code it belongs to if you ever reposition that code later.
+- **A markdown cell reads as the header of the code it introduces**, so put it immediately before that cell — `edit(code="md\"\"\"## Fit quality\"\"\"", after="load_data")`, then the code cell `after` that markdown cell. Pluto renders it like a section heading, and it moves with the code it belongs to if you ever reposition that code later.
+
+Pluto's own presentation mode (Share → Slideshow) reads its structure the same way, from nothing but markdown headers in display order — no separate slide metadata, so `after`/`before` genuinely shape it, not just how the notebook reads in a browser. `#` starts a title slide, `##` starts a regular slide, `###` and deeper stay inside whichever slide is already open. Use `#`/`##` for a heading that should also work as a slide break; keep `###`+ for finer structure within one slide. Moving a cell across a `#`/`##` boundary moves it to a different slide, not just a different scroll position — worth knowing before repositioning a notebook that might get presented.
 
 ## Throwaway cells
 
