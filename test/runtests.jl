@@ -422,6 +422,48 @@ const MAIN = Ref{String}("")
     call("edit", Dict("cell" => "added_ok", "code" => "", "wait_seconds" => 60))
 end
 
+@testset "edit: after/before position cells, independent of dependency order" begin
+    call("open", Dict("create" => true, "wait_seconds" => 120))
+
+    call("edit", Dict("code" => "pos_a = 1", "wait_seconds" => 60))
+    call("edit", Dict("code" => "pos_b = 2", "wait_seconds" => 60))
+    names() = [c.name for c in call("read", Dict()).cells]
+    @test names() == ["pos_a", "pos_b"]
+
+    call("edit", Dict("code" => "pos_c = 3", "after" => "pos_a", "wait_seconds" => 60))
+    @test names() == ["pos_a", "pos_c", "pos_b"]
+
+    call("edit", Dict("code" => "pos_d = 4", "before" => "pos_a", "wait_seconds" => 60))
+    @test names() == ["pos_d", "pos_a", "pos_c", "pos_b"]
+
+    # Moving an EXISTING cell: same code, sent again -- which reruns it, the
+    # same as any other resend, but the point here is the reorder.
+    r = call("edit", Dict("cell" => "pos_b", "code" => "pos_b = 2",
+                          "after" => "pos_a", "wait_seconds" => 60))
+    @test is_record(r)
+    @test names() == ["pos_d", "pos_a", "pos_b", "pos_c"]
+
+    # A prose "header" cell placed immediately before the code it introduces --
+    # it declares nothing, so its "name" is its own cell_id (see cell_labels).
+    md = call("edit", Dict("code" => "md\"\"\"### section\"\"\"",
+                           "before" => "pos_c", "wait_seconds" => 60))
+    md_id = string(only(c.cell_id for c in md.cells))
+    ordered = names()
+    @test findfirst(==(md_id), ordered) == findfirst(==("pos_c"), ordered) - 1
+
+    @test call("edit", Dict("code" => "x = 1", "after" => "pos_a",
+                            "before" => "pos_b", "wait_seconds" => 60)).error
+    @test call("edit", Dict("cell" => "pos_a", "code" => "pos_a = 1",
+                            "after" => "pos_a", "wait_seconds" => 60)).error
+    @test call("edit", Dict("cell" => "pos_a", "code" => "",
+                            "after" => "pos_b", "wait_seconds" => 60)).error
+    @test call("edit", Dict("code" => "y = 1", "after" => "no-such-cell",
+                            "wait_seconds" => 60)).error
+
+    call("stop", Dict("notebook" => basename(P._notebook().path)))
+    call("open", Dict("path" => MAIN[], "wait_seconds" => 60))   # back to the main notebook
+end
+
 @testset "a cell that becomes prose folds too" begin
     # Prose written by REPLACING a cell is prose all the same. Found by a live
     # run: its title cell was the one unfolded md in the notebook, because it

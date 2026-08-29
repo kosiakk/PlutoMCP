@@ -89,6 +89,18 @@ Pluto runs cells in **dependency order**, not top to bottom, and allows **one de
   A bound variable makes the dependency reactive, so the value has a widget in the browser and `bond` sets it from here.
   `x = rand()` re-run by hand is a parameter you have hidden from the human reading the notebook.
 
+## Display order is not execution order
+
+Pluto runs cells by dependency, so nothing stops you writing the headline result before the code that produces it — the reactive engine does not care which one sits higher on the page. Use that: it is what makes a notebook readable as an argument rather than as a derivation you have to scroll through in the order you happened to write it in.
+
+`edit`'s `after`/`before` place a cell where a human reads it, `cell` is still which cell you are writing to. A default worth reaching for on purpose, not worth forcing everywhere:
+
+- **Salient cells first.** The title, the main function, the headline result — near the top, right after the intro. Helpers and one-off utilities last: present for provenance, not for the front page.
+- **A `@bind` widget goes immediately before what it drives.** A slider forty cells from its plot is a UI the reader has to reverse-engineer; a slider directly above the plot is self-explanatory. Adjacency is the documentation.
+- **A markdown cell reads as the header of the code it introduces**, so put it immediately before that cell — `edit(code="md\"\"\"### Fit quality\"\"\"", after="load_data")` then the code cell `after` that markdown cell. Pluto renders it like a section heading, and it moves with the code it belongs to if you ever reposition that code later.
+
+Keep the derivation *within* a section linear even so — headline-first is about which section comes first, not about scrambling the steps that lead to one result.
+
 ## Throwaway cells
 
 **Every capability question has the same answer: write a cell.**
@@ -98,9 +110,9 @@ Probing a value, reading a docstring, computing a statistic, expanding a contain
 Use `delete_on_success=true` on an insert:
 
 ```
-edit(mode="insert", code="@doc bootstrap_ci", delete_on_success=true, wait_seconds=15)
-edit(mode="insert", code="quantile(residuals, [0.01, 0.5, 0.99])", delete_on_success=true, wait_seconds=15)
-edit(mode="insert", code="describe(df)", delete_on_success=true, wait_seconds=15)
+edit(code="@doc bootstrap_ci", delete_on_success=true, wait_seconds=15)
+edit(code="quantile(residuals, [0.01, 0.5, 0.99])", delete_on_success=true, wait_seconds=15)
+edit(code="describe(df)", delete_on_success=true, wait_seconds=15)
 ```
 
 Deleted only if `status` is `success` when the call returns — so a probe that errors stays put for you to read, and cleaning it up afterwards is your job, not the server's.

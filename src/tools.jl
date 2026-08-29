@@ -285,11 +285,11 @@ pluto_edit = MCPTool(
     name="edit",
     description="""Write the notebook. What you pass says what happens:
 
-    code, no cell     a new cell, at the end
-    cell + code       that cell's text becomes this
+    code, no cell     a new cell, at the end (or by after/before)
+    cell + code       that cell's text becomes this (moves too, with after/before)
     cell + code ""    the cell is deleted
 
-`code` is Julia, always — prose is a cell whose expression is `md\"\"\"…\"\"\"`. There are no cell types, and there is no order to manage: Pluto runs cells by dependency, not by position.
+`code` is Julia, always — prose is a cell whose expression is `md\"\"\"…\"\"\"`. There are no cell types, and there is no EXECUTION order to manage: Pluto runs cells by dependency, not by position. Display position is a separate thing — the order a human scrolls through — and `after`/`before` place a cell in it: put the headline result near the top and helpers at the bottom, or a `@bind` widget right next to what it drives, regardless of what depends on what.
 
 Editing one cell re-runs whatever depends on it, so a small edit can be a large run; the record lists every cell the cascade touched. There is no separate run tool. Sending a cell's text again runs it again, unchanged or not, which is all that is left for the inputs reactivity cannot see — a file on disk, an RNG, an environment variable.
 
@@ -302,6 +302,8 @@ A deleted cell comes back in the record with `change: "deleted"`, and with its `
         # parameter, and absence is what says "delete" here.
         ToolParameter(name="code", type="string", description="The cell's text. Empty deletes the cell. Sending a cell's existing text again runs it again.", required=true),
         ToolParameter(name="delete_on_success", type="boolean", description="Delete the cell again if it reaches status=\"success\" before this call returns (default false; new cells only)", required=false, default=false),
+        ToolParameter(name="after", type="string", description="Display position: put this cell right after the referenced one. $CELL_REF_DOC Not the cell being written to — that is `cell`. With no `cell`, positions a new cell instead of appending it. With `cell`, moves an existing one (and re-runs it, the same as resending any code). Not with `before`, and not on a delete.", required=false),
+        ToolParameter(name="before", type="string", description="Display position: put this cell right before the referenced one, otherwise identical to `after`.", required=false),
         wait_param(),
         NOTEBOOK_PARAM,
     ],
@@ -309,6 +311,21 @@ A deleted cell comes back in the record with `change: "deleted"`, and with its `
         s = session(); nb = _nb(args)
         ref = get(args, "cell", nothing)
         throwaway = get(args, "delete_on_success", false) == true
+
+        after_ref = get(args, "after", nothing)
+        before_ref = get(args, "before", nothing)
+        after_ref !== nothing && before_ref !== nothing &&
+            error("after and before are two ways to say the same thing — send one")
+        # Resolved up front: a bad reference refuses cleanly before anything is
+        # written, rather than after a cell has already been created or edited.
+        position = if after_ref !== nothing
+            (cell=resolve_cell(nb, String(after_ref)), after=true)
+        elseif before_ref !== nothing
+            (cell=resolve_cell(nb, String(before_ref)), after=false)
+        else
+            nothing
+        end
+
         # `code` is always given: what happens is decided by whether a cell is
         # named and whether the text is empty. Empty means "there should be no
         # cell" -- an empty cell means nothing, so the token is free for the
@@ -321,6 +338,7 @@ A deleted cell comes back in the record with `change: "deleted"`, and with its `
 
         if isempty(code)
             ref === nothing && error("a new cell needs code")
+            position === nothing || error("after/before is meaningless on a delete")
             c = resolve_cell(nb, String(ref))
             # Name and text before removal: a label exists only while the cell
             # does, and handing the code back is what makes a mistaken delete
@@ -344,7 +362,7 @@ A deleted cell comes back in the record with `change: "deleted"`, and with its `
         if ref === nothing
             c = new_cell(code)
             Pluto.withtoken(nb.executetoken) do
-                push!(nb.cell_order, c.cell_id)
+                _insert_at!(nb.cell_order, c.cell_id, position)
                 nb.cells_dict[c.cell_id] = c
             end
             _mark_seen!(nb.notebook_id, c.cell_id, c.code)
@@ -370,6 +388,15 @@ A deleted cell comes back in the record with `change: "deleted"`, and with its `
         end
 
         c = resolve_cell(nb, String(ref))
+        position === nothing || position.cell.cell_id != c.cell_id ||
+            error("a cell cannot be positioned relative to itself")
+        if position !== nothing
+            Pluto.withtoken(nb.executetoken) do
+                i = findfirst(==(c.cell_id), nb.cell_order)
+                i === nothing || deleteat!(nb.cell_order, i)
+                _insert_at!(nb.cell_order, c.cell_id, position)
+            end
+        end
         unchanged = c.code == code
         # A cell that BECOMES prose folds, the way one created as prose does.
         # Only on the transition: a cell that was already prose keeps whatever
@@ -387,6 +414,25 @@ A deleted cell comes back in the record with `change: "deleted"`, and with its `
     end),
     return_type=TextContent,
 )
+
+"""
+Insert `cell_id` into `cell_order`, which must not already contain it.
+
+`position` is `nothing` (append, the default) or `(cell, after)` from `edit`'s
+`after`/`before` resolution -- `cell`'s CURRENT index is looked up here, not
+earlier, so this is correct whether `cell_id` used to sit before or after the
+target (a move deletes its old entry first; see `edit`'s handler). Caller
+holds `executetoken`.
+"""
+function _insert_at!(cell_order::Vector{Base.UUID}, cell_id::Base.UUID, position)
+    if position === nothing
+        push!(cell_order, cell_id)
+    else
+        j = findfirst(==(position.cell.cell_id), cell_order)
+        insert!(cell_order, position.after ? j + 1 : j, cell_id)
+    end
+    return nothing
+end
 
 """Take a cell out of the notebook under the same lock the browser's edits use."""
 function _remove_cell!(nb, c)
