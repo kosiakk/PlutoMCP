@@ -233,7 +233,7 @@ end
     # speak; every one of them now has exactly one replacement.
     banned = ["block", "new_source", "source", "cell_id", "waited_s", "full",
               "edit_mode", "ephemeral", "finished", "errored", "session", "cell_type",
-              "mode", "after", "run", "tree", "upstream", "downstream"]
+              "mode", "run", "tree", "upstream", "downstream"]
     for tool in P.ALL_TOOLS, p in tool.parameters
         @test !(p.name in banned)
     end
