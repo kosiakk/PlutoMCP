@@ -1,7 +1,7 @@
 #=
-The MCP surface: eight tools, one record, one vocabulary.
+The MCP surface: seven tools, one record, one vocabulary.
 
-Eight because every capability question has the same answer -- the agent writes a
+Seven because every capability question has the same answer -- the agent writes a
 cell. Probing a value, reading a docstring, computing a statistic, rendering a
 plot: all of these are cells, usually deleted on success. Tools exist only where
 cells cannot reach: lifecycle, the result record, raw bytes, and human-edit

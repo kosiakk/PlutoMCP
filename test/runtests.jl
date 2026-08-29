@@ -250,9 +250,10 @@ end
     # comes back complete without a follow-up read.
     @test P.DEFAULT_WAIT > 0
 
-    # Eight tools, exactly these. `export` folded into `output` (a notebook
+    # Seven tools, exactly these. `export` folded into `output` (a notebook
     # rendered as text/html IS the export); `list` gone (the agent lists files
-    # itself, and a bad ref names what is open).
+    # itself, and a bad ref names what is open); `run` folded into `edit`
+    # (resending a cell's code re-runs it).
     @test Set(keys(TOOLS)) == Set(["start", "open", "edit",
                                    "read", "output", "bond", "stop"])
     # No tool takes a session: there is one server per process.

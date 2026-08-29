@@ -26,15 +26,14 @@ Corollary: no scratchpad or second eval path (probes are visible cells), no tran
 
 ## Tools
 
-Eight.
+Seven.
 Signatures are the contract; defaults shown.
 
 ```
 start(port=nothing)
 open(path=nothing, create=false, wait_seconds=0.1)
-edit(notebook, cell=nothing, code=nothing, mode="replace", wait_seconds=0.1, delete_on_success=false)
-run(notebook, cells=nothing, wait_seconds=0.1)
-read(notebook, cells=nothing, tree=false, wait_seconds=0.1, since=nothing)
+edit(notebook, cell=nothing, code=nothing, after=nothing, before=nothing, wait_seconds=0.1, delete_on_success=false)
+read(notebook, cells=nothing, dependencies=false, wait_seconds=0.1, since=nothing)
 output(notebook, cell=nothing, mime, path=nothing)
 bond(notebook, name, value, wait_seconds=0.1)
 stop(notebook=nothing, cell=nothing)
@@ -54,8 +53,6 @@ stop(notebook=nothing, cell=nothing)
   `delete_on_success=true`: the cell runs normally in the workspace, visible in the browser, and is deleted iff `status` is `success` at return time; otherwise it stays and the agent removes it by the returned id.
   With `wait_seconds=0` the server returns before witnessing success, so the flag never fires.
   That return-time deletion is its entire contract.
-- `run`: recompute cells (`cells=nothing` means all).
-  Backup path only: `edit` saves and runs, human browser edits run through Pluto's UI, so `run` exists for cells whose non-reactive inputs changed (files on disk, RNG, env).
 - `read`: snapshot, dependencies (`dependencies=true`: `uses` and `used_by`, flat lists of cell names, one hop each way), wait until nothing is `running`/`queued` or a new error appears, changes since a timestamp including human edits.
   The one status/wait/diff tool.
 - `output`: one cell — or, with no `cell`, the notebook itself (`text/html` is Pluto's export: state embedded, frontend from a CDN, so not an offline file; `text/plain` is the `.jl` source) — in the representation the caller names.
