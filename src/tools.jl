@@ -289,7 +289,7 @@ pluto_edit = MCPTool(
     cell + code       that cell's text becomes this (moves too, with after/before)
     cell + code ""    the cell is deleted
 
-`code` is Julia, always — prose is a cell whose expression is `md\"\"\"…\"\"\"`. There are no cell types, and there is no EXECUTION order to manage: Pluto runs cells by dependency, not by position. Display position is a separate thing — the order a human scrolls through — and `after`/`before` place a cell in it: put the headline result near the top and helpers at the bottom, or a `@bind` widget right next to what it drives, regardless of what depends on what.
+`code` is Julia, always — prose is a cell whose expression is `md\"\"\"…\"\"\"`. There are no cell types, and there is no EXECUTION order to manage: Pluto runs cells by dependency, not by position. Display position is a separate thing — the order a human scrolls through — and `after`/`before` place a cell in it. Reach for them locally: a `@bind` widget right next to what it drives, a markdown header immediately before the section it introduces. Not to hoist results to the top — Pluto's UI already jumps a reader from a name to its definition, so a helper sitting below its caller costs nothing to find.
 
 Editing one cell re-runs whatever depends on it, so a small edit can be a large run; the record lists every cell the cascade touched. There is no separate run tool. Sending a cell's text again runs it again, unchanged or not, which is all that is left for the inputs reactivity cannot see — a file on disk, an RNG, an environment variable.
 

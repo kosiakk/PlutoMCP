@@ -91,15 +91,12 @@ Pluto runs cells in **dependency order**, not top to bottom, and allows **one de
 
 ## Display order is not execution order
 
-Pluto runs cells by dependency, so nothing stops you writing the headline result before the code that produces it — the reactive engine does not care which one sits higher on the page. Use that: it is what makes a notebook readable as an argument rather than as a derivation you have to scroll through in the order you happened to write it in.
+Pluto runs cells by dependency, so nothing stops a cell using a name a LATER cell defines — the reactive engine does not care which one sits higher on the page. That is not license to hoist everything important to the top, though: Pluto's own UI lets a reader jump straight from a name to its defining cell, the way an IDE jumps to a definition, so a helper sitting below the logic that calls it is not the readability tax it would be without that feature. A typical good notebook still zig-zags — title, then imports and helpers, then a chapter of logic, plots as the payoff at the end — because that is the order the argument was actually built in, and there is no need to fight that shape.
 
-`edit`'s `after`/`before` place a cell where a human reads it, `cell` is still which cell you are writing to. A default worth reaching for on purpose, not worth forcing everywhere:
+`edit`'s `after`/`before` place a cell where a human reads it; `cell` is still which cell you are writing to. Reach for them for LOCAL adjacency — fixing a cell that landed in the wrong spot — not for imposing importance-order on the whole notebook:
 
-- **Salient cells first.** The title, the main function, the headline result — near the top, right after the intro. Helpers and one-off utilities last: present for provenance, not for the front page.
-- **A `@bind` widget goes immediately before what it drives.** A slider forty cells from its plot is a UI the reader has to reverse-engineer; a slider directly above the plot is self-explanatory. Adjacency is the documentation.
-- **A markdown cell reads as the header of the code it introduces**, so put it immediately before that cell — `edit(code="md\"\"\"### Fit quality\"\"\"", after="load_data")` then the code cell `after` that markdown cell. Pluto renders it like a section heading, and it moves with the code it belongs to if you ever reposition that code later.
-
-Keep the derivation *within* a section linear even so — headline-first is about which section comes first, not about scrambling the steps that lead to one result.
+- **A `@bind` widget goes immediately before what it drives.** Unlike a function, there is no jump-to-definition from a widget's effect back to the widget — a slider forty cells from its plot is something the reader has to hunt for, where one directly above the plot is self-explanatory.
+- **A markdown cell reads as the header of the code it introduces**, so put it immediately before that cell — `edit(code="md\"\"\"### Fit quality\"\"\"", after="load_data")`, then the code cell `after` that markdown cell. Pluto renders it like a section heading, and it moves with the code it belongs to if you ever reposition that code later.
 
 ## Throwaway cells
 
