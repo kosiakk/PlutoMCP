@@ -422,6 +422,63 @@ const MAIN = Ref{String}("")
     call("edit", Dict("cell" => "added_ok", "code" => "", "wait_seconds" => 60))
 end
 
+@testset "edit: after/before position cells, independent of dependency order" begin
+    call("open", Dict("create" => true, "wait_seconds" => 120))
+
+    call("edit", Dict("code" => "pos_a = 1", "wait_seconds" => 60))
+    call("edit", Dict("code" => "pos_b = 2", "wait_seconds" => 60))
+    names() = [c.name for c in call("read", Dict()).cells]
+    @test names() == ["pos_a", "pos_b"]
+
+    call("edit", Dict("code" => "pos_c = 3", "after" => "pos_a", "wait_seconds" => 60))
+    @test names() == ["pos_a", "pos_c", "pos_b"]
+
+    call("edit", Dict("code" => "pos_d = 4", "before" => "pos_a", "wait_seconds" => 60))
+    @test names() == ["pos_d", "pos_a", "pos_c", "pos_b"]
+
+    # Moving an EXISTING cell with its code UNCHANGED must not rerun it --
+    # only different code is consent to rerun. Checked against the cell's own
+    # last_run_timestamp, the same signal run_with_deadline itself watches,
+    # not just the returned record's shape.
+    b_id = Base.UUID(only(c.cell_id for c in call("read", Dict("cells" => ["pos_b"])).cells))
+    ts_before_move = P.run_timestamps(P._notebook())[b_id]
+    r = call("edit", Dict("cell" => "pos_b", "code" => "pos_b = 2",
+                          "after" => "pos_a", "wait_seconds" => 60))
+    @test is_record(r)
+    @test r.waited_seconds == 0.0
+    @test P.run_timestamps(P._notebook())[b_id] == ts_before_move
+    @test names() == ["pos_d", "pos_a", "pos_b", "pos_c"]
+
+    # A move WITH different code still reruns -- moving is not a shield
+    # against the ordinary edit contract. Order here was [pos_d, pos_a,
+    # pos_b, pos_c]; moving pos_b to AFTER pos_c is a real change, not a
+    # no-op like re-asking for where it already sits.
+    call("edit", Dict("cell" => "pos_b", "code" => "pos_b = 22",
+                      "after" => "pos_c", "wait_seconds" => 60))
+    @test cell_output("pos_b") == "22"
+    @test names() == ["pos_d", "pos_a", "pos_c", "pos_b"]
+
+    # A prose "header" cell placed immediately before the code it introduces --
+    # it declares nothing, so its "name" is its own cell_id (see cell_labels).
+    md = call("edit", Dict("code" => "md\"\"\"### section\"\"\"",
+                           "before" => "pos_c", "wait_seconds" => 60))
+    md_id = string(only(c.cell_id for c in md.cells))
+    ordered = names()
+    @test findfirst(==(md_id), ordered) == findfirst(==("pos_c"), ordered) - 1
+
+    @test call("edit", Dict("code" => "x = 1", "after" => "pos_a",
+                            "before" => "pos_b", "wait_seconds" => 60)).error
+    @test call("edit", Dict("cell" => "pos_a", "code" => "pos_a = 1",
+                            "after" => "pos_a", "wait_seconds" => 60)).error
+    @test call("edit", Dict("cell" => "pos_a", "code" => "",
+                            "after" => "pos_b", "wait_seconds" => 60)).error
+    @test call("edit", Dict("code" => "y = 1", "after" => "no-such-cell",
+                            "wait_seconds" => 60)).error
+
+    call("stop", Dict("notebook" => basename(P._notebook().path)))
+    call("open", Dict("path" => MAIN[], "wait_seconds" => 60))   # back to the main notebook
+end
+
 @testset "a cell that becomes prose folds too" begin
     # Prose written by REPLACING a cell is prose all the same. Found by a live
     # run: its title cell was the one unfolded md in the notebook, because it

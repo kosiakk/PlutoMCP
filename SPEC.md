@@ -47,10 +47,10 @@ stop(notebook=nothing, cell=nothing)
   Pathless create gives an anonymous scratch notebook (Pluto cutename in tempdir); the description tells the agent to name kept work after the experiment.
   A created notebook is EMPTY — content in it is the agent's, never this package's.
   Every worker gets the render helper.
-- `edit`: `mode` is `replace`, `insert` (after `cell`, or append when `cell=nothing`), or `delete`.
+- `edit`: no `cell` is a new one (at the end, or by `after`/`before`); `cell` with `code` overwrites it (and repositions it, given `after`/`before`); `cell` with `code=""` deletes it.
   A cell whose expression is `md"…"` or `html"…"` is created folded — Pluto's own `code_folded`, persisted in the file as a `# ╟─` line.
   A display default made where a person would make the same one; it takes no parameter, appears in no record, and one click undoes it.
-  Modes share every other argument, which is why one tool holds them.
+  `after`/`before` are display position only — where a human scrolls past the cell, not when Pluto runs it, which stays dependency order regardless. Resolved by the same cell reference every other parameter uses, so a bad one refuses before anything is written. Repositioning an existing cell with its code unchanged moves it and stops there — nothing reruns, because nothing about what to compute changed, and running a cell just because it moved would be a surprise for one with side effects (an RNG, a file append). Different code moves AND reruns it, same as any other edit.
   `delete_on_success=true`: the cell runs normally in the workspace, visible in the browser, and is deleted iff `status` is `success` at return time; otherwise it stays and the agent removes it by the returned id.
   With `wait_seconds=0` the server returns before witnessing success, so the flag never fires.
   That return-time deletion is its entire contract.

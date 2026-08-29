@@ -89,6 +89,17 @@ Pluto runs cells in **dependency order**, not top to bottom, and allows **one de
   A bound variable makes the dependency reactive, so the value has a widget in the browser and `bond` sets it from here.
   `x = rand()` re-run by hand is a parameter you have hidden from the human reading the notebook.
 
+## Display order is not execution order
+
+Pluto runs cells by dependency, so nothing stops a cell using a name a LATER cell defines — the reactive engine does not care which one sits higher on the page, and Pluto's own docs put it plainly: "you can place cells in the order that makes the most sense for your story, which is not always the order that makes the most sense for the computer." That is not license to hoist everything important to the top, though: Pluto's own UI lets a reader jump straight from a name to its defining cell, the way an IDE jumps to a definition, so a helper sitting below the logic that calls it is not the readability tax it would be without that feature. A typical good notebook still zig-zags — title, then imports and helpers, then a chapter of logic, plots as the payoff at the end — because that is the order the argument was actually built in. Pluto's own worked example of reordering for narrative reasons is exactly this shape: pushing an "Appendix" to the end, not hoisting a headline to the top.
+
+`edit`'s `after`/`before` place a cell where a human reads it; `cell` is still which cell you are writing to. Reach for them for LOCAL adjacency — fixing a cell that landed in the wrong spot — not for imposing importance-order on the whole notebook:
+
+- **A `@bind` widget goes immediately before what it drives.** Unlike a function, there is no jump-to-definition from a widget's effect back to the widget — a slider forty cells from its plot is something the reader has to hunt for, where one directly above the plot is self-explanatory.
+- **A markdown cell reads as the header of the code it introduces**, so put it immediately before that cell — `edit(code="md\"\"\"## Fit quality\"\"\"", after="load_data")`, then the code cell `after` that markdown cell. Pluto renders it like a section heading, and it moves with the code it belongs to if you ever reposition that code later.
+
+Pluto's own presentation mode (Share → Slideshow) reads its structure the same way, from nothing but markdown headers in display order — no separate slide metadata, so `after`/`before` genuinely shape it, not just how the notebook reads in a browser. `#` starts a title slide, `##` starts a regular slide, `###` and deeper stay inside whichever slide is already open. Use `#`/`##` for a heading that should also work as a slide break; keep `###`+ for finer structure within one slide. Moving a cell across a `#`/`##` boundary moves it to a different slide, not just a different scroll position — worth knowing before repositioning a notebook that might get presented.
+
 ## Throwaway cells
 
 **Every capability question has the same answer: write a cell.**
@@ -98,9 +109,9 @@ Probing a value, reading a docstring, computing a statistic, expanding a contain
 Use `delete_on_success=true` on an insert:
 
 ```
-edit(mode="insert", code="@doc bootstrap_ci", delete_on_success=true, wait_seconds=15)
-edit(mode="insert", code="quantile(residuals, [0.01, 0.5, 0.99])", delete_on_success=true, wait_seconds=15)
-edit(mode="insert", code="describe(df)", delete_on_success=true, wait_seconds=15)
+edit(code="@doc bootstrap_ci", delete_on_success=true, wait_seconds=15)
+edit(code="quantile(residuals, [0.01, 0.5, 0.99])", delete_on_success=true, wait_seconds=15)
+edit(code="describe(df)", delete_on_success=true, wait_seconds=15)
 ```
 
 Deleted only if `status` is `success` when the call returns — so a probe that errors stays put for you to read, and cleaning it up afterwards is your job, not the server's.
