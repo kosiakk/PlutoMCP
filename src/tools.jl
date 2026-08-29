@@ -659,6 +659,16 @@ nothing live to run against.
 A dead worker leaves no choice — one cell cannot run in a workspace that holds
 nothing, so everything runs.
 
+`process_status == no_process` is Pluto's own signal for that, set the instant
+`run_single!` sees `process_exited` (evaluation/Run.jl) -- which is exactly
+what a `stop`-requested interrupt leaves behind when the running code does not
+yield to it and Pluto escalates to killing the worker outright. `_current_worker`
+alone misses this: WorkspaceManager's registry keeps the dead `Workspace`
+around (worker != nothing, process exited), so checking it in isolation reads
+as "still alive" and a single-cell run against that corpse never progresses --
+measured: a cell stayed `unrun` indefinitely rather than getting the fresh
+worker `open`'s own dead-worker recovery promises.
+
 A notebook Pluto is holding for review is different, and `unchanged` is the
 whole of it. Writing a cell back exactly as it stands says "I have read this
 and it can run": that is consent, and everything runs. Writing DIFFERENT text
@@ -675,7 +685,9 @@ function _run_set(nb::Pluto.Notebook, c::Pluto.Cell, unchanged::Bool)
         nb.process_status = Pluto.ProcessStatus.starting
         return copy(nb.cells)
     end
-    _current_worker(s.session, nb) === nothing ? copy(nb.cells) : Pluto.Cell[c]
+    dead = nb.process_status == Pluto.ProcessStatus.no_process ||
+           _current_worker(s.session, nb) === nothing
+    dead ? copy(nb.cells) : Pluto.Cell[c]
 end
 
 """

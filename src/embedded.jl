@@ -833,6 +833,21 @@ function run_with_deadline(nb::Pluto.Notebook, cells::Vector{Pluto.Cell};
     # truth instead of a heuristic over `running`/`queued`/timestamps, which
     # could read "idle" in the instant before an async run had even started.
     await_run(nb, cells; wait_seconds) do
+        # A worker that got interrupted and did not yield ends up killed --
+        # process_status becomes no_process (Run.jl, on process_exited) -- but
+        # the dead Workspace stays registered in WorkspaceManager regardless:
+        # its own get_workspace only creates one for a notebook_id that is
+        # ABSENT, so nothing downstream would ever get a fresh worker without
+        # evicting it first. Pluto's own "Restart process" button does exactly
+        # this shutdown before re-running (Dynamic.jl's response_restart_process);
+        # do the same, keeping the notebook itself in the session. Inside
+        # `_run_lock` (via await_run), not before it: this mutates the same
+        # per-notebook state a concurrent fire-and-forget run is touching, and
+        # that lock exists precisely to keep two of these from racing.
+        if nb.process_status == Pluto.ProcessStatus.no_process
+            Pluto.SessionActions.shutdown(s.session, nb; keep_in_session=true, async=false)
+            nb.process_status = Pluto.ProcessStatus.starting
+        end
         Pluto.update_save_run!(s.session, nb, cells; run_async=false, save)
     end
 end

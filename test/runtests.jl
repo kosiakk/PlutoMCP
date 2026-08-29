@@ -1514,5 +1514,34 @@ end
     call("start")   # the rest of the suite needs one
 end
 
+@testset "a cell interrupt that kills the worker still recovers on the next edit" begin
+    # Distinct from "a notebook held for review"'s dead-worker coverage: that
+    # one forces the dead state through `unmake_workspace`, which already
+    # evicts Pluto's own WorkspaceManager registry as part of tearing the
+    # worker down. `stop`'s cell interrupt does not go through
+    # `unmake_workspace` at all -- an interrupt the running code never yields
+    # to ends in `Malt.TerminatedWorkerException`, Run.jl sets
+    # process_status=no_process on that process_exited, and the dead
+    # `Workspace` stays registered. `get_workspace`'s own `get!` only creates
+    # one for a notebook_id that is ABSENT, so that stale entry -- not just a
+    # dead process -- is the part `run_with_deadline` has to notice.
+    call("open", Dict("create" => true, "wait_seconds" => 60))
+    call("edit", Dict("code" => "friend = 1", "wait_seconds" => 5))
+    call("edit", Dict("code" => "napping2 = (sleep(30); :done)", "wait_seconds" => 0.3))
+    call("stop", Dict("notebook" => basename(P._notebook().path), "cell" => "napping2"))
+
+    # Only meaningful if the interrupt actually escalated to a kill -- a clean
+    # interrupt (an InterruptException the code yielded to) never hits this
+    # registry gap.
+    if P._notebook().process_status == Pluto.ProcessStatus.no_process
+        r = call("edit", Dict("cell" => "napping2", "code" => "napping2 = 42", "wait_seconds" => 30))
+        @test r.cells[1].status == "success"
+        @test cell_output("napping2") == "42"
+        # `friend` lives in the SAME dead workspace: only a fresh worker
+        # running the whole notebook, not just the one cell, restores it.
+        @test cell_output("friend") == "1"
+    end
+end
+
 call("start")           # the browser-visibility suite needs one
 include("browser_visibility_test.jl")
