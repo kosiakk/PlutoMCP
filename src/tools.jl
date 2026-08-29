@@ -246,6 +246,7 @@ An interrupted cell reports `unrun` — you asked for the stop, so its error is 
                 _forget_seen!(c.cell_id); _forget_reported!(c.cell_id)
             end
             filter!(e -> e.notebook_id != nb.notebook_id, CHANGES)
+            _forget_run_lock!(nb.notebook_id)
             path = nb.path
             s.current[] == nb.notebook_id && (s.current[] = nothing)
             Pluto.SessionActions.shutdown(s.session, nb; async=false)
@@ -381,7 +382,9 @@ A deleted cell comes back in the record with `change: "deleted"`, and with its `
             if throwaway && r.status == "success"
                 label = cell_labels(nb)[string(c.cell_id)]
                 _remove_cell!(nb, c)
-                Pluto.update_save_run!(s.session, nb, Pluto.Cell[c]; run_async=false, save=false)
+                Pluto.withtoken(_run_lock(nb)) do
+                    Pluto.update_save_run!(s.session, nb, Pluto.Cell[c]; run_async=false, save=false)
+                end
                 r = merge(r, (deleted=label,))
             end
             return _ok(r)
